@@ -23,6 +23,9 @@
                     <div invisible="not is_tj_enabled" class="mb16">
                         <button name="action_run_schedule" type="object"
                                 string="Ejecutar Schedule" class="btn-primary me-2"/>
+                        <button name="action_view_gantt" type="object"
+                                string="Ver Gantt" class="btn-secondary me-2"
+                                invisible="not last_scheduled"/>
                         <button name="action_export_tjp" type="object"
                                 string="Exportar TJP" class="btn-secondary"/>
                     </div>

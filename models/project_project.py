@@ -114,6 +114,16 @@ class ProjectProject(models.Model):
                 pass
             raise UserError(_('Error del microservicio TJ3: %s\n%s') % (str(e), detail))
 
+    def action_view_gantt(self):
+        self.ensure_one()
+        if not self.last_scheduled:
+            raise UserError(_('Ejecute el schedule primero para generar el Gantt.'))
+        return {
+            'type': 'ir.actions.act_url',
+            'url': f'/insight_project/gantt/{self.id}',
+            'target': 'new',
+        }
+
     # ── TJP Generator ─────────────────────────────────────────────────────────
 
     def _generate_tjp(self):
@@ -500,3 +510,180 @@ class ProjectProject(models.Model):
             return float(value or '0') > 0.0
         except (ValueError, TypeError):
             return False
+
+    # ── Gantt SVG renderer ────────────────────────────────────────────────────
+
+    def _render_gantt_svg(self):
+        """Generate a plain SVG Gantt from insight.task.schedule records."""
+        import calendar
+
+        def _esc(s):
+            return (str(s)
+                    .replace('&', '&amp;')
+                    .replace('<', '&lt;')
+                    .replace('>', '&gt;')
+                    .replace('"', '&quot;'))
+
+        def _bsi_key(bsi):
+            return [int(p) if p.isdigit() else p for p in (bsi or '0').split('.')]
+
+        schedules = self.env['insight.task.schedule'].search(
+            [('task_id.project_id', '=', self.id)],
+        ).filtered(lambda s: s.start_scheduled and s.end_scheduled)
+
+        if not schedules:
+            return (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="90"'
+                ' font-family="Arial, sans-serif">'
+                '<rect width="640" height="90" fill="#fafafa"/>'
+                '<text x="32" y="50" font-size="13" fill="#757575">'
+                'No hay datos de schedule. Ejecute "Ejecutar Schedule" primero.</text>'
+                '</svg>'
+            )
+
+        # Collect scenarios preserving first-seen order
+        seen_sc = {}
+        for s in schedules:
+            seen_sc.setdefault(s.scenario_id.id, s.scenario_id)
+        scenarios = list(seen_sc.values())
+
+        BAR_NORMAL   = ['#43A047', '#1E88E5', '#FB8C00', '#8E24AA', '#00ACC1']
+        BAR_CRITICAL = ['#C62828', '#1565C0', '#E65100', '#6A1B9A', '#00695C']
+        sc_color = {
+            sc.id: (BAR_NORMAL[i % 5], BAR_CRITICAL[i % 5])
+            for i, sc in enumerate(scenarios)
+        }
+
+        min_dt = min(s.start_scheduled for s in schedules)
+        max_dt = max(s.end_scheduled   for s in schedules)
+        span_secs = max((max_dt - min_dt).total_seconds(), 86400.0)
+
+        # Group by BSI in sorted order
+        groups = {}
+        for s in schedules:
+            groups.setdefault(s.bsi or '?', []).append(s)
+        ordered_bsis = sorted(groups.keys(), key=_bsi_key)
+
+        # Layout
+        LW, RW = 340, 1060
+        TW = LW + RW
+        RH = 26
+        HDR, LEG, AXIS = 56, 24, 24
+        TOP = HDR + LEG + AXIS
+
+        n_rows = sum(len(v) for v in groups.values())
+        TH = TOP + n_rows * RH + 16
+
+        def xp(dt):
+            return LW + (dt - min_dt).total_seconds() / span_secs * RW
+
+        o = []
+        o.append(
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{TW}" height="{TH}"'
+            f' font-family="Arial, Helvetica, sans-serif" font-size="11">'
+        )
+        o.append(f'<rect width="{TW}" height="{TH}" fill="#ffffff"/>')
+
+        # Title + subtitle
+        o.append(
+            f'<text x="10" y="22" font-size="15" font-weight="bold" fill="#212121">'
+            f'{_esc(self.name or "Proyecto")}</text>'
+        )
+        if self.last_scheduled:
+            o.append(
+                f'<text x="10" y="40" font-size="10" fill="#9E9E9E">'
+                f'Último schedule: {self.last_scheduled.strftime("%Y-%m-%d %H:%M")} UTC</text>'
+            )
+
+        # Scenario legend
+        xl, yl = 10, HDR + 16
+        for sc in scenarios:
+            cn, _ = sc_color[sc.id]
+            o.append(f'<rect x="{xl}" y="{yl-11}" width="13" height="13" fill="{cn}" rx="2"/>')
+            o.append(f'<text x="{xl+17}" y="{yl}" fill="#424242">{_esc(sc.name)}</text>')
+            xl += 20 + len(sc.name) * 7
+        o.append(
+            f'<text x="{xl+6}" y="{yl}" fill="#C62828" font-weight="bold">⚡ camino crítico</text>'
+        )
+
+        # Left / right divider
+        o.append(
+            f'<line x1="{LW}" y1="{HDR}" x2="{LW}" y2="{TH}"'
+            f' stroke="#BDBDBD" stroke-width="1"/>'
+        )
+
+        # Month grid lines + labels
+        ms = datetime(min_dt.year, min_dt.month, 1)
+        while ms <= max_dt:
+            if ms >= min_dt:
+                mx = xp(ms)
+                o.append(
+                    f'<line x1="{mx:.1f}" y1="{TOP}" x2="{mx:.1f}" y2="{TH}"'
+                    f' stroke="#F0F0F0" stroke-width="1"/>'
+                )
+                o.append(
+                    f'<text x="{mx+3:.1f}" y="{HDR+LEG+17}"'
+                    f' fill="#9E9E9E" font-size="10">'
+                    f'{calendar.month_abbr[ms.month]} {ms.year}</text>'
+                )
+            ms = datetime(ms.year + (ms.month == 12), ms.month % 12 + 1, 1)
+
+        # "Today" marker (UTC)
+        now_utc = datetime.utcnow()
+        if min_dt <= now_utc <= max_dt:
+            nx = xp(now_utc)
+            o.append(
+                f'<line x1="{nx:.1f}" y1="{TOP}" x2="{nx:.1f}" y2="{TH}"'
+                f' stroke="#E53935" stroke-width="1.5"'
+                f' stroke-dasharray="5,3" opacity="0.7"/>'
+            )
+            o.append(
+                f'<text x="{nx+2:.1f}" y="{HDR+LEG+17}"'
+                f' fill="#E53935" font-size="9" font-weight="bold">Hoy</text>'
+            )
+
+        # Task rows
+        yc = TOP
+        for bsi in ordered_bsis:
+            rows = groups[bsi]
+            task = rows[0].task_id
+            indent = bsi.count('.') * 12
+
+            for ridx, sched in enumerate(rows):
+                bg = '#FAFAFA' if (yc // RH) % 2 == 0 else '#FFFFFF'
+                o.append(f'<rect x="0" y="{yc}" width="{TW}" height="{RH}" fill="{bg}"/>')
+
+                if ridx == 0:
+                    weight = 'bold' if not task.parent_id else 'normal'
+                    label = _esc((task.name or '')[:44])
+                    o.append(
+                        f'<text x="{8+indent}" y="{yc+17}" fill="#424242">'
+                        f'<tspan font-size="10" fill="#9E9E9E">{_esc(bsi)} </tspan>'
+                        f'<tspan font-weight="{weight}">{label}</tspan></text>'
+                    )
+
+                x1 = xp(sched.start_scheduled)
+                x2 = xp(sched.end_scheduled)
+                bw = max(x2 - x1, 4.0)
+                cn, cc = sc_color[sched.scenario_id.id]
+                fill = cc if sched.is_critical_path else cn
+                stroke = ' stroke="#b71c1c" stroke-width="1.5"' if sched.is_critical_path else ''
+                o.append(
+                    f'<rect x="{x1:.1f}" y="{yc+5}" width="{bw:.1f}" height="{RH-10}"'
+                    f' fill="{fill}" rx="3" opacity="0.88"{stroke}/>'
+                )
+                if sched.is_critical_path:
+                    o.append(
+                        f'<text x="{x1+bw+2:.1f}" y="{yc+15}" font-size="10">⚡</text>'
+                    )
+                if len(scenarios) > 1 and bw > 50:
+                    o.append(
+                        f'<text x="{x1+4:.1f}" y="{yc+15}"'
+                        f' fill="white" font-size="9" font-weight="bold">'
+                        f'{_esc(sched.scenario_id.name[:9])}</text>'
+                    )
+
+                yc += RH
+
+        o.append('</svg>')
+        return '\n'.join(o)

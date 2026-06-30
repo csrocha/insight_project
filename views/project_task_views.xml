@@ -7,8 +7,10 @@
         <field name="arch" type="xml">
             <xpath expr="//field[@name='tag_ids']" position="after">
                 <field name="is_milestone"/>
+                <field name="alternative_assignee_id"
+                       invisible="is_milestone"/>
                 <field name="tj_dependency_type"
-                       invisible="not is_milestone"/>
+                       invisible="is_milestone"/>
             </xpath>
             <xpath expr="//notebook" position="inside">
                 <page string="Schedule" name="schedule">
