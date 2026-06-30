@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="project_project_view_form_inherit_insight" model="ir.ui.view">
+        <field name="name">project.project.form.inherit.insight_project</field>
+        <field name="model">project.project</field>
+        <field name="inherit_id" ref="project.edit_project"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="TaskJuggler" name="tashjuggler">
+                    <group>
+                        <group>
+                            <field name="is_tj_enabled"/>
+                            <field name="tj_now"
+                                   invisible="not is_tj_enabled"/>
+                            <field name="tj_timezone"
+                                   invisible="not is_tj_enabled"/>
+                        </group>
+                        <group>
+                            <field name="schedule_dirty" readonly="1"/>
+                            <field name="last_scheduled" readonly="1"/>
+                        </group>
+                    </group>
+                    <div invisible="not is_tj_enabled" class="mb16">
+                        <button name="action_run_schedule" type="object"
+                                string="Ejecutar Schedule" class="btn-primary me-2"/>
+                        <button name="action_export_tjp" type="object"
+                                string="Exportar TJP" class="btn-secondary"/>
+                    </div>
+                    <separator string="Escenarios" invisible="not is_tj_enabled"/>
+                    <field name="scenario_ids" invisible="not is_tj_enabled"
+                           context="{'default_project_id': active_id}">
+                        <list>
+                            <field name="name"/>
+                            <field name="is_baseline"/>
+                        </list>
+                    </field>
+                    <separator string="Recursos" invisible="not is_tj_enabled"/>
+                    <field name="resource_ids" invisible="not is_tj_enabled"
+                           context="{'default_project_id': active_id}">
+                        <list>
+                            <field name="partner_id"/>
+                            <field name="source"/>
+                            <field name="base_efficiency"/>
+                            <field name="daily_max_hours"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

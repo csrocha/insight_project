@@ -1,0 +1,13 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_insight_scenario_manager,insight.scenario manager,model_insight_scenario,project.group_project_manager,1,1,1,1
+access_insight_scenario_user,insight.scenario user,model_insight_scenario,base.group_user,1,0,0,0
+access_insight_scenario_efficiency_manager,insight.scenario.efficiency manager,model_insight_scenario_efficiency,project.group_project_manager,1,1,1,1
+access_insight_scenario_efficiency_user,insight.scenario.efficiency user,model_insight_scenario_efficiency,base.group_user,1,0,0,0
+access_insight_resource_manager,insight.resource manager,model_insight_resource,project.group_project_manager,1,1,1,1
+access_insight_resource_user,insight.resource user,model_insight_resource,base.group_user,1,0,0,0
+access_insight_resource_shift_manager,insight.resource.shift manager,model_insight_resource_shift,project.group_project_manager,1,1,1,1
+access_insight_resource_shift_user,insight.resource.shift user,model_insight_resource_shift,base.group_user,1,0,0,0
+access_insight_resource_vacation_manager,insight.resource.vacation manager,model_insight_resource_vacation,project.group_project_manager,1,1,1,1
+access_insight_resource_vacation_user,insight.resource.vacation user,model_insight_resource_vacation,base.group_user,1,0,0,0
+access_insight_task_schedule_manager,insight.task.schedule manager,model_insight_task_schedule,project.group_project_manager,1,1,1,1
+access_insight_task_schedule_user,insight.task.schedule user,model_insight_task_schedule,base.group_user,1,0,0,0

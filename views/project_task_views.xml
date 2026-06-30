@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="project_task_view_form_inherit_insight" model="ir.ui.view">
+        <field name="name">project.task.form.inherit.insight_project</field>
+        <field name="model">project.task</field>
+        <field name="inherit_id" ref="project.view_task_form2"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='tag_ids']" position="after">
+                <field name="is_milestone"/>
+                <field name="tj_dependency_type"
+                       invisible="not is_milestone"/>
+            </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="Schedule" name="schedule">
+                    <group>
+                        <group string="Fechas planificadas">
+                            <field name="start_scheduled" readonly="1"/>
+                            <field name="end_scheduled" readonly="1"/>
+                            <field name="bsi" readonly="1"/>
+                        </group>
+                        <group string="Estado">
+                            <field name="is_critical_path" readonly="1"/>
+                        </group>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>
