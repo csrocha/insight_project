@@ -39,4 +39,11 @@
               action="action_insight_resource"
               groups="project.group_project_manager"
               sequence="101"/>
+
+    <menuitem id="menu_insight_config"
+              name="Configuración TaskJuggler"
+              parent="project.menu_project_config"
+              action="action_insight_project_config"
+              groups="base.group_system"
+              sequence="110"/>
 </odoo>
