@@ -43,7 +43,7 @@
                             nuevo contacto, o ignorarlo.
                         </p>
                         <field name="resource_map_ids" nolabel="1">
-                            <list editable="bottom">
+                            <tree editable="bottom">
                                 <field name="tj_resource_id" readonly="1" optional="show"/>
                                 <field name="tj_resource_name" readonly="1"/>
                                 <field name="action"/>
@@ -51,7 +51,7 @@
                                        invisible="action != 'map'"
                                        required="action == 'map'"
                                        optional="show"/>
-                            </list>
+                            </tree>
                         </field>
                     </div>
                 </sheet>

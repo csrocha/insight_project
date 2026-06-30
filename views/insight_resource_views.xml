@@ -4,12 +4,12 @@
         <field name="name">insight.resource.list</field>
         <field name="model">insight.resource</field>
         <field name="arch" type="xml">
-            <list>
+            <tree>
                 <field name="partner_id"/>
                 <field name="source"/>
                 <field name="base_efficiency"/>
                 <field name="daily_max_hours"/>
-            </list>
+            </tree>
         </field>
     </record>
 
@@ -34,21 +34,21 @@
                         <page string="Turnos"
                               invisible="source == 'hr'">
                             <field name="shift_ids">
-                                <list editable="bottom">
+                                <tree editable="bottom">
                                     <field name="day_of_week"/>
                                     <field name="hour_from"/>
                                     <field name="hour_to"/>
-                                </list>
+                                </tree>
                             </field>
                         </page>
                         <page string="Vacaciones / Ausencias"
                               invisible="source == 'hr'">
                             <field name="vacation_ids">
-                                <list editable="bottom">
+                                <tree editable="bottom">
                                     <field name="name"/>
                                     <field name="date_from"/>
                                     <field name="date_to"/>
-                                </list>
+                                </tree>
                             </field>
                         </page>
                     </notebook>

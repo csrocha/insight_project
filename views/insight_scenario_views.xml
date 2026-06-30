@@ -4,11 +4,11 @@
         <field name="name">insight.scenario.list</field>
         <field name="model">insight.scenario</field>
         <field name="arch" type="xml">
-            <list>
+            <tree>
                 <field name="name"/>
                 <field name="project_id"/>
                 <field name="is_baseline"/>
-            </list>
+            </tree>
         </field>
     </record>
 
@@ -26,10 +26,10 @@
                     <notebook>
                         <page string="Eficiencias">
                             <field name="efficiency_ids">
-                                <list editable="bottom">
+                                <tree editable="bottom">
                                     <field name="partner_id"/>
                                     <field name="efficiency"/>
-                                </list>
+                                </tree>
                             </field>
                         </page>
                     </notebook>
