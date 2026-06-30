@@ -20,14 +20,19 @@
                             <field name="last_scheduled" readonly="1"/>
                         </group>
                     </group>
-                    <div invisible="not is_tj_enabled" class="mb16">
+                    <div class="mb16">
                         <button name="action_run_schedule" type="object"
-                                string="Ejecutar Schedule" class="btn-primary me-2"/>
+                                string="Ejecutar Schedule" class="btn-primary me-2"
+                                invisible="not is_tj_enabled"/>
                         <button name="action_view_gantt" type="object"
                                 string="Ver Gantt" class="btn-secondary me-2"
                                 invisible="not last_scheduled"/>
                         <button name="action_export_tjp" type="object"
-                                string="Exportar TJP" class="btn-secondary"/>
+                                string="Exportar TJP" class="btn-secondary me-2"
+                                invisible="not is_tj_enabled"/>
+                        <button name="action_open_import_wizard" type="object"
+                                string="Importar TJP..." class="btn-secondary"
+                                invisible="is_tj_enabled"/>
                     </div>
                     <separator string="Escenarios" invisible="not is_tj_enabled"/>
                     <field name="scenario_ids" invisible="not is_tj_enabled"

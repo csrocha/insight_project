@@ -11,3 +11,7 @@ access_insight_resource_vacation_manager,insight.resource.vacation manager,model
 access_insight_resource_vacation_user,insight.resource.vacation user,model_insight_resource_vacation,base.group_user,1,0,0,0
 access_insight_task_schedule_manager,insight.task.schedule manager,model_insight_task_schedule,project.group_project_manager,1,1,1,1
 access_insight_task_schedule_user,insight.task.schedule user,model_insight_task_schedule,base.group_user,1,0,0,0
+access_insight_import_wizard_manager,insight.import.wizard manager,model_insight_import_wizard,project.group_project_manager,1,1,1,1
+access_insight_import_wizard_user,insight.import.wizard user,model_insight_import_wizard,base.group_user,1,1,1,1
+access_insight_import_resource_map_manager,insight.import.resource.map manager,model_insight_import_resource_map,project.group_project_manager,1,1,1,1
+access_insight_import_resource_map_user,insight.import.resource.map user,model_insight_import_resource_map,base.group_user,1,1,1,1

@@ -124,6 +124,16 @@ class ProjectProject(models.Model):
             'target': 'new',
         }
 
+    def action_open_import_wizard(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'insight.import.wizard',
+            'view_mode': 'form',
+            'target': 'new',
+            'context': {'active_id': self.id},
+        }
+
     # ── TJP Generator ─────────────────────────────────────────────────────────
 
     def _generate_tjp(self):

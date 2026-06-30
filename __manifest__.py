@@ -2,7 +2,7 @@
 {
     'name': "Insight Project — TaskJuggler Integration",
     'summary': "Schedules Odoo projects via TaskJuggler 3 microservice",
-    'version': '17.0.4.0.0',
+    'version': '17.0.5.0.0',
     'category': 'Project',
     'author': "Cristian S. Rocha <csrocha@gmail.com>",
     'website': "https://github.com/csrocha/insight_project",
@@ -15,6 +15,7 @@
         'views/insight_resource_views.xml',
         'views/project_project_views.xml',
         'views/project_task_views.xml',
+        'views/insight_import_wizard_views.xml',
         'views/menus.xml',
     ],
     'installable': True,
