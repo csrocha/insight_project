@@ -9,6 +9,66 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.2.0.0] - 2026-06-30
+
+### Prompt
+
+> Si, arranca con el paso 7.
+
+### Discusion de diseno
+
+- **IDs TJ3 con prefijo tipo (`p`, `res`, `t`)**: se descartan nombres sanitizados
+  para evitar colisiones; `p{id}`, `res{partner_id}`, `t{task_id}` son únicos por
+  construcción y permiten mapear de vuelta el CSV de TJ3 → Odoo sin tabla auxiliar.
+- **`effort` vs `duration` para tareas sin recurso**: TJ3 requiere `allocate` para
+  poder schedulear `effort`. Si la tarea tiene horas planificadas pero no tiene ningún
+  recurso del proyecto asignado, se emite `duration` en lugar de `effort`. Esto hace
+  el TJP válido y deja la tarea en el timeline aunque sin asignar.
+- **`_tjp_task_abs_path` con `!`**: los paths relativos en `depends` fallan cuando la
+  tarea dependida está en un subárbol distinto. Se usa el prefijo `!` (scope del
+  proyecto) + ruta completa desde la raíz del proyecto para todos los depends.
+- **`supplement resource` para eficiencias por escenario**: en lugar de incluir todas
+  las eficiencias por escenario dentro del bloque `resource { }`, se usa
+  `supplement resource resX { sc:efficiency N }` que es más legible y separa la
+  definición del recurso de sus overrides por escenario.
+- **`_tjp_calendar_hours` emite `off` para días no configurados**: TJ3 hereda el
+  calendario global si no se especifica. Para evitar que un empleado trabaje sábados/
+  domingos por herencia de calendario global, se emite `workinghours sat off` y
+  `workinghours sun off` para todos los días sin attendances.
+- **`_tjp_manual_schedule` con default Mon–Fri 9–17**: si un recurso manual no tiene
+  turnos cargados, se asume la semana laboral estándar. Evita que TJ3 rechace el
+  recurso por no tener horarios definidos.
+- **`_generate_tjp` ordena por `sequence`**: las tareas se emiten en orden de
+  `sequence` de Odoo para que el BSI generado por TJ3 sea estable entre corridas
+  (mismo orden → mismo BSI), facilitando el matching en `_import_schedule_csv`.
+- **`action_export_tjp` crea `ir.attachment`**: en lugar de retornar el contenido
+  inline, crea un attachment temporal y retorna un `ir.actions.act_url`. Esto permite
+  que Odoo gestione el download sin timeouts de RPC.
+
+### Anadido
+
+- `_tjp_project_header`: bloque `project { timezone, now, scenarios }` completo.
+- `_tjp_project_end_date`: infiere el fin del proyecto desde `date_deadline` de
+  tareas + buffer 33%; fallback a +2 años con `dateutil.relativedelta`.
+- `_tjp_resource_block`: genera bloque completo con `efficiency`, `limits.dailymax`,
+  y delega horarios a `_tjp_hr_schedule` o `_tjp_manual_schedule`.
+- `_tjp_hr_schedule`: lee `resource.calendar.attendance_ids` y `hr.leave` (aprobadas)
+  del empleado asociado al partner del recurso.
+- `_tjp_calendar_hours`: convierte `resource.calendar.attendance_ids` → cláusulas
+  `workinghours TJP`; emite `off` para días no configurados.
+- `_tjp_manual_schedule`: convierte `insight.resource.shift/vacation` → TJP.
+- `_tjp_scenario_supplement`: emite `supplement resource` con `sc_id:efficiency`.
+- `_tjp_task_block` (recursivo): emite `task { milestone | effort/allocate, depends,
+  subtareas }`.
+- `_tjp_allocate`: mapea `task.user_ids` a IDs de recursos del proyecto; soporta
+  `alternative_assignee_id`.
+- `_tjp_reports`: emite `taskreport "DebugCSV"` con columnas para el CSV de TJ3.
+- `action_export_tjp`: crea `ir.attachment` y retorna `act_url` para download.
+- Helpers estáticos: `_tjp_resource_id`, `_tjp_task_id`, `_tjp_task_abs_path`,
+  `_tjp_scenario_id`, `_float_to_hhmm`.
+
+---
+
 ## [17.0.1.1.0] - 2026-06-30
 
 ### Prompt
