@@ -30,7 +30,14 @@
                                 <div class="text-muted">
                                     Tiempo máximo de espera para el microservicio (segundos)
                                 </div>
-                                <field name="tj_microservice_timeout"/>
+                                <div class="d-flex align-items-center gap-2">
+                                    <field name="tj_microservice_timeout"/>
+                                    <button name="action_test_tj_connection"
+                                            type="object"
+                                            string="Probar conexión"
+                                            class="btn btn-sm btn-secondary"
+                                            title="Guarda los cambios primero, luego probá la conexión"/>
+                                </div>
                             </div>
                         </div>
                     </div>

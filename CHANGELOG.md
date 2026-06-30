@@ -9,6 +9,39 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.1.1.0] - 2026-06-30
+
+### Prompt
+
+> Si arranca con el siguiente paso
+
+### Discusion de diseno
+
+- **`get_values` para default de timeout**: `fields.Integer` con `config_parameter`
+  devuelve `0` (falsy) cuando el parámetro no existe aún en `ir.config_parameter`.
+  Se sobreescribe `get_values` para retornar `120` como default, evitando que el
+  formulario muestre 0 en una instalación fresca.
+- **Test de conexión lee de `ir.config_parameter` directamente**: el botón
+  `action_test_tj_connection` no lee `self.tj_microservice_url` porque en
+  `res.config.settings` (TransientModel) el valor del campo puede estar sin guardar
+  si el usuario hace click sin guardar primero. Leer desde `ir.config_parameter.sudo()`
+  garantiza que se testa la URL efectivamente almacenada.
+- **`/health` como endpoint de test**: endpoint estándar para servicios HTTP. Si el
+  microservicio no implementa `/health`, el test dará un error 404 pero al menos
+  confirma conectividad. Alternativa: usar el endpoint `/` o `/docs` de FastAPI,
+  pero `/health` es más explícito y fácil de agregar al microservicio.
+- **Distinción de errores HTTP**: se capturan `ConnectionError`, `Timeout` e
+  `HTTPError` por separado para dar mensajes de error más útiles al usuario.
+
+### Modificado
+
+- `models/res_config_settings.py`: override de `get_values` para default timeout 120;
+  método `action_test_tj_connection` con health check al microservicio.
+- `views/res_config_settings_views.xml`: botón "Probar conexión" inline junto al
+  campo timeout.
+
+---
+
 ## [17.0.1.0.0] - 2026-06-30
 
 ### Prompt
