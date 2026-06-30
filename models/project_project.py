@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import base64
+import csv
+import io
 import re
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
@@ -55,8 +57,62 @@ class ProjectProject(models.Model):
         self.ensure_one()
         if not self.is_tj_enabled:
             raise UserError(_('La integración TaskJuggler no está habilitada para este proyecto.'))
-        # TODO: call TJ3 microservice via HTTP and import CSV results
-        pass
+        if not self.scenario_ids:
+            raise UserError(_('Defina al menos un escenario antes de ejecutar el schedule.'))
+
+        ICP = self.env['ir.config_parameter'].sudo()
+        url = ICP.get_param('insight_project.tj_microservice_url')
+        if not url:
+            raise UserError(_('Configure la URL del microservicio TJ3 en Ajustes → TaskJuggler.'))
+        try:
+            timeout = int(ICP.get_param('insight_project.tj_microservice_timeout') or 120)
+        except (ValueError, TypeError):
+            timeout = 120
+
+        tjp_content = self._generate_tjp()
+        response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
+
+        imported = self._import_all_schedules(response_data.get('csv_files', {}))
+        self.write({
+            'schedule_dirty': False,
+            'last_scheduled': fields.Datetime.now(),
+        })
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Schedule completado'),
+                'message': _('Schedule actualizado para %d escenario(s).') % imported,
+                'type': 'success',
+                'sticky': False,
+            },
+        }
+
+    def _call_tj_microservice(self, base_url, tjp_content, timeout):
+        import requests
+        try:
+            resp = requests.post(
+                f'{base_url}/schedule',
+                json={'tjp_content': tjp_content, 'timeout': timeout},
+                timeout=timeout + 15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.ConnectionError:
+            raise UserError(
+                _('No se pudo conectar con el microservicio TJ3 en %s.') % base_url
+            )
+        except requests.exceptions.Timeout:
+            raise UserError(_('Timeout esperando respuesta del microservicio TJ3.'))
+        except requests.exceptions.HTTPError as e:
+            detail = ''
+            try:
+                err = e.response.json().get('detail', {})
+                if isinstance(err, dict):
+                    detail = err.get('stderr', '') or err.get('error', '')
+            except Exception:
+                pass
+            raise UserError(_('Error del microservicio TJ3: %s\n%s') % (str(e), detail))
 
     # ── TJP Generator ─────────────────────────────────────────────────────────
 
@@ -283,15 +339,28 @@ class ProjectProject(models.Model):
         return [f'allocate {", ".join(primary_ids)}']
 
     def _tjp_reports(self):
-        sc_ids = [self._tjp_scenario_id(sc) for sc in self.scenario_ids] or ['plan']
-        return [
-            'taskreport "DebugCSV" {',
-            '  formats csv',
-            '  columns id, bsi, name, start, end, effort, duration, resources, criticalness',
-            f'  scenarios {", ".join(sc_ids)}',
-            '}',
-            '',
-        ]
+        """One taskreport per scenario so each CSV file maps to exactly one scenario."""
+        if not self.scenario_ids:
+            return [
+                'taskreport "schedule_plan" {',
+                '  formats csv',
+                '  columns id, bsi, name, start, end, effort, duration, resources, criticalness',
+                '  scenarios plan',
+                '}',
+                '',
+            ]
+        lines = []
+        for sc in self.scenario_ids:
+            sc_id = self._tjp_scenario_id(sc)
+            lines += [
+                f'taskreport "schedule_{sc_id}" {{',
+                '  formats csv',
+                '  columns id, bsi, name, start, end, effort, duration, resources, criticalness',
+                f'  scenarios {sc_id}',
+                '}',
+                '',
+            ]
+        return lines
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -328,7 +397,106 @@ class ProjectProject(models.Model):
         m = int(round((hours - h) * 60))
         return f'{h}:{m:02d}'
 
-    # ── CSV import (stub for Paso 9) ──────────────────────────────────────────
+    # ── Schedule import ───────────────────────────────────────────────────────
 
-    def _import_schedule_csv(self, csv_content):
-        pass
+    def _import_all_schedules(self, csv_files):
+        """Dispatch each CSV file to its matching scenario; return count imported."""
+        sc_map = {self._tjp_scenario_id(sc): sc for sc in self.scenario_ids}
+        imported = 0
+        for filename, csv_content in csv_files.items():
+            base = filename.rsplit('.', 1)[0]
+            sc_key = base[len('schedule_'):] if base.startswith('schedule_') else base
+            scenario = sc_map.get(sc_key)
+            if not scenario:
+                continue
+            self._import_scenario_csv(csv_content, scenario)
+            imported += 1
+        return imported
+
+    def _import_scenario_csv(self, csv_content, scenario):
+        """Parse a TJ3 CSV report and upsert insight.task.schedule records."""
+        Schedule = self.env['insight.task.schedule']
+        Schedule.search([
+            ('scenario_id', '=', scenario.id),
+            ('task_id.project_id', '=', self.id),
+        ]).unlink()
+
+        tz_name = (self.tj_timezone or 'UTC').replace(' ', '_')
+        valid_task_ids = set(
+            self.env['project.task'].search([('project_id', '=', self.id)]).ids
+        )
+
+        vals_list = []
+        reader = csv.DictReader(io.StringIO(csv_content))
+        for row in reader:
+            norm = {k.strip().lower(): (v or '').strip() for k, v in row.items()}
+            task_odoo_id = self._parse_task_id_from_tj_id(norm.get('id', ''))
+            if not task_odoo_id or task_odoo_id not in valid_task_ids:
+                continue
+            vals_list.append({
+                'task_id': task_odoo_id,
+                'scenario_id': scenario.id,
+                'start_scheduled': self._parse_tj_datetime(norm.get('start', ''), tz_name),
+                'end_scheduled': self._parse_tj_datetime(norm.get('end', ''), tz_name),
+                'effort_days': self._parse_tj_duration(norm.get('effort', '')),
+                'duration_days': self._parse_tj_duration(norm.get('duration', '')),
+                'is_critical_path': self._parse_tj_criticalness(norm.get('criticalness', '')),
+                'bsi': norm.get('bsi', ''),
+            })
+        if vals_list:
+            Schedule.create(vals_list)
+
+    @staticmethod
+    def _parse_task_id_from_tj_id(tj_id):
+        """Extract Odoo task ID from TJ3 path (e.g. 't42.t99' → 99)."""
+        if not tj_id:
+            return None
+        try:
+            return int(tj_id.strip().split('.')[-1].lstrip('t'))
+        except (ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def _parse_tj_datetime(value, tz_name='UTC'):
+        """Parse TJ3 date/datetime and return a UTC-naive datetime for Odoo storage."""
+        if not value:
+            return False
+        import pytz
+        for fmt in ('%Y-%m-%d %H:%M', '%Y-%m-%d'):
+            try:
+                naive = datetime.strptime(value.strip(), fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return False
+        try:
+            local_tz = pytz.timezone(tz_name)
+            return local_tz.localize(naive).astimezone(pytz.UTC).replace(tzinfo=None)
+        except Exception:
+            return naive
+
+    @staticmethod
+    def _parse_tj_duration(value):
+        """Convert TJ3 duration string to float days (e.g. '5.0d'→5.0, '40h'→5.0)."""
+        if not value:
+            return 0.0
+        v = value.strip()
+        try:
+            if v.endswith('d'):
+                return float(v[:-1])
+            if v.endswith('h'):
+                return float(v[:-1]) / 8.0
+            if v.endswith('w'):
+                return float(v[:-1]) * 5.0
+            return float(v)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    @staticmethod
+    def _parse_tj_criticalness(value):
+        """Return True when TJ3 criticalness > 0 (task is on the critical path)."""
+        try:
+            return float(value or '0') > 0.0
+        except (ValueError, TypeError):
+            return False
