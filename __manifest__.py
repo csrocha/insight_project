@@ -7,7 +7,7 @@
     'author': "Cristian S. Rocha <csrocha@gmail.com>",
     'website': "https://github.com/csrocha/insight_project",
     'license': 'OPL-1',
-    'depends': ['project', 'hr_holidays'],
+    'depends': ['project', 'hr_holidays', 'base_setup'],
     'data': [
         'security/ir.model.access.csv',
         'views/res_config_settings_views.xml',

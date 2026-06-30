@@ -26,7 +26,9 @@ class ResConfigSettings(models.TransientModel):
         return res
 
     def action_test_tj_connection(self):
-        url = (
+        # web_save updates the transient record but doesn't call execute(),
+        # so ir.config_parameter may not have the value yet — read the field first.
+        url = self.tj_microservice_url or (
             self.env['ir.config_parameter']
             .sudo()
             .get_param('insight_project.tj_microservice_url')
