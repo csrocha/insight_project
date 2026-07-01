@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields, api
+from odoo import _, models, fields, api
 
 
 class ProjectTask(models.Model):
     _inherit = 'project.task'
 
     is_milestone = fields.Boolean(string='Hito')
-    alternative_assignee_id = fields.Many2one(
-        'res.partner', string='Asignado alternativo',
-    )
     tj_dependency_type = fields.Selection(
         [('FS', 'Finish→Start'), ('SS', 'Start→Start'), ('FF', 'Finish→Finish')],
         string='Tipo de dependencia TJ',
@@ -45,3 +42,18 @@ class ProjectTask(models.Model):
             task.end_scheduled = schedule.end_scheduled
             task.is_critical_path = schedule.is_critical_path
             task.bsi = schedule.bsi
+
+    def action_switch_to_session(self):
+        """Activa esta tarea en la sesión del systray del usuario actual."""
+        self.ensure_one()
+        self.env['insight.user.session'].action_switch_task(self.id)
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Tarea activada'),
+                'message': _('Ahora estás trabajando en "%s".') % self.name,
+                'type': 'success',
+                'sticky': False,
+            },
+        }

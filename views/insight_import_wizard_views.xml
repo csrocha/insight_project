@@ -18,13 +18,15 @@
                         <group>
                             <field name="tjp_file" widget="binary"
                                    filename="tjp_filename"
-                                   string="Archivo TJP"/>
+                                   string="Archivo TJP o ZIP (.tjp / .zip)"/>
                             <field name="tjp_filename" invisible="1"/>
                         </group>
                         <div class="alert alert-info" role="alert" style="margin-top:8px">
-                            Suba un archivo <b>.tjp</b> existente. El asistente lo enviará al
-                            microservicio TJ3, detectará las tareas, escenarios y recursos, y le
-                            permitirá mapearlos a empleados de Odoo antes de crear el proyecto.
+                            Suba un archivo <b>.tjp</b> o un <b>.zip</b> que contenga el
+                            <code>.tjp</code> y sus archivos <code>.tji</code> de inclusión.
+                            El asistente lo enviará al microservicio TJ3, detectará las tareas,
+                            escenarios y recursos, y le permitirá mapearlos a empleados de Odoo
+                            antes de crear el proyecto.
                         </div>
                     </group>
 
@@ -47,9 +49,8 @@
                                 <field name="tj_resource_id" readonly="1" optional="show"/>
                                 <field name="tj_resource_name" readonly="1"/>
                                 <field name="action"/>
-                                <field name="employee_id"
+                                <field name="user_id"
                                        invisible="action != 'map'"
-                                       required="action == 'map'"
                                        optional="show"/>
                             </tree>
                         </field>

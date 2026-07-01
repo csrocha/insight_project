@@ -13,18 +13,6 @@
         </field>
     </record>
 
-    <record id="action_insight_resource" model="ir.actions.act_window">
-        <field name="name">Recursos TJ</field>
-        <field name="res_model">insight.resource</field>
-        <field name="view_mode">tree,form</field>
-        <field name="help" type="html">
-            <p class="o_view_nocontent_smiling_face">
-                No hay recursos definidos aún.
-            </p>
-            <p>Los recursos se crean desde la pestaña TaskJuggler de cada proyecto.</p>
-        </field>
-    </record>
-
     <!-- Menus under Project → Configuration -->
     <menuitem id="menu_insight_scenario"
               name="Escenarios TJ"
@@ -32,11 +20,4 @@
               action="action_insight_scenario"
               groups="project.group_project_manager"
               sequence="100"/>
-
-    <menuitem id="menu_insight_resource"
-              name="Recursos TJ"
-              parent="project.menu_project_config"
-              action="action_insight_resource"
-              groups="project.group_project_manager"
-              sequence="101"/>
 </odoo>

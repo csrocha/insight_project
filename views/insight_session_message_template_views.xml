@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_insight_session_message_template_list" model="ir.ui.view">
+        <field name="name">insight.session.message.template.list</field>
+        <field name="model">insight.session.message.template</field>
+        <field name="arch" type="xml">
+            <tree editable="bottom">
+                <field name="direction"/>
+                <field name="sequence" widget="handle"/>
+                <field name="name"/>
+                <field name="requires_detail"/>
+                <field name="kanban_state"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="action_insight_session_message_template" model="ir.actions.act_window">
+        <field name="name">Mensajes de inicio/cierre de tarea</field>
+        <field name="res_model">insight.session.message.template</field>
+        <field name="view_mode">tree</field>
+        <field name="context">{'default_direction': 'enter'}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No hay plantillas de mensaje definidas aún.
+            </p>
+            <p>
+                Estas plantillas se ofrecen al cambiar de tarea desde el systray,
+                tanto para describir qué se va a hacer (al entrar) como qué se
+                logró (al salir). Las de "Al salir" pueden fijar el estado kanban
+                de la tarea que se deja.
+            </p>
+        </field>
+    </record>
+
+    <menuitem id="menu_insight_session_message_template"
+              name="Mensajes de inicio/cierre de tarea"
+              parent="project.menu_project_config"
+              action="action_insight_session_message_template"
+              groups="project.group_project_manager"
+              sequence="110"/>
+</odoo>

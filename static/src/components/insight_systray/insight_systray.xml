@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<templates xml:space="preserve">
+
+<t t-name="insight_project.InsightSystrayItem">
+    <div class="o_insight_systray d-flex align-items-center gap-1">
+        <span class="o_insight_chip badge text-bg-light" t-att-title="state.projectName">
+            🏗 <span class="o_insight_chip_text" t-esc="state.projectName"/>
+        </span>
+
+        <Dropdown menuClass="'o_insight_systray_menu o_insight_task_menu'">
+            <t t-set-slot="toggler">
+                <span class="o_insight_chip o_insight_chip-task badge"
+                      t-attf-class="text-bg-{{ state.isCriticalPath ? 'danger' : 'light' }}">
+                    <t t-if="state.isCriticalPath">⚡ </t>
+                    <t t-else="">✅ </t>
+                    <span class="o_insight_chip_text" t-esc="state.taskName"/>
+                </span>
+            </t>
+            <t t-set-slot="default">
+                <div class="o_insight_task_hint" t-if="state.taskId">
+                    <div class="fw-bold mb-1"><t t-esc="state.taskName"/></div>
+                    <div class="text-muted small mb-2" t-esc="state.taskDescription || 'Sin descripción.'"/>
+                    <button class="btn btn-sm btn-secondary" t-on-click="() => this.onOpenTask()">
+                        Abrir tarea <i class="fa fa-external-link ms-1"/>
+                    </button>
+                </div>
+                <div class="dropdown-divider" t-if="state.taskId"/>
+                <DropdownItem t-foreach="state.tasks" t-as="task" t-key="task.id"
+                              onSelected="() => this.onSelectTask(task.id)">
+                    <span t-attf-class="{{ task.is_critical_path ? 'text-danger fw-bold' : '' }}">
+                        <t t-if="task.is_critical_path">⚡ </t>
+                        <t t-esc="task.name"/>
+                    </span>
+                </DropdownItem>
+                <DropdownItem t-if="!state.tasks.length" class="text-muted">
+                    No hay tareas por vencer esta semana ni la próxima
+                </DropdownItem>
+                <div class="dropdown-divider"/>
+                <DropdownItem onSelected="() => this.onNewTask()">
+                    ➕ Nueva tarea
+                </DropdownItem>
+            </t>
+        </Dropdown>
+
+        <span class="o_insight_chip badge text-bg-light" title="Tiempo trabajado en la tarea actual">
+            ⏱ <t t-esc="state.elapsed"/>
+        </span>
+
+        <button class="btn btn-sm btn-link p-0 ms-1" title="Descanso" t-on-click="() => this.onTakeBreak()">
+            <i class="fa fa-pause"/>
+        </button>
+    </div>
+</t>
+
+</templates>

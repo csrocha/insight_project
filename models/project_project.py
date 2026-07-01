@@ -6,28 +6,39 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+import pytz
+
 from odoo import _, fields, models
 from odoo.exceptions import UserError
+
+
+def _tz_get(self):
+    return [(x, x) for x in sorted(pytz.all_timezones)]
 
 # Odoo resource.calendar dayofweek → TJ3 day name
 _DOW_TJ = {
     '0': 'mon', '1': 'tue', '2': 'wed',
     '3': 'thu', '4': 'fri', '5': 'sat', '6': 'sun',
 }
-_DOW_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
 
 class ProjectProject(models.Model):
     _inherit = 'project.project'
 
     tj_now = fields.Date(string='Fecha base del plan')
-    tj_timezone = fields.Char(
+    tj_timezone = fields.Selection(
+        _tz_get,
         string='Zona horaria TJ',
         default='America/Argentina/Buenos_Aires',
     )
     is_tj_enabled = fields.Boolean(string='Habilitar integración TaskJuggler')
+    tj_end_date = fields.Date(
+        string='Horizonte de planificación',
+        help='Fecha límite para el scheduling en TaskJuggler. Si se deja vacío, '
+             'se calcula a partir del deadline más lejano de las tareas o, en su '
+             'defecto, 2 años desde la fecha base del plan.',
+    )
     scenario_ids = fields.One2many('insight.scenario', 'project_id', string='Escenarios')
-    resource_ids = fields.One2many('insight.resource', 'project_id', string='Recursos')
     schedule_dirty = fields.Boolean(string='Schedule desactualizado')
     last_scheduled = fields.Datetime(string='Último schedule', readonly=True)
 
@@ -88,12 +99,15 @@ class ProjectProject(models.Model):
             },
         }
 
-    def _call_tj_microservice(self, base_url, tjp_content, timeout):
+    def _call_tj_microservice(self, base_url, tjp_content, timeout, include_files=None):
         import requests
+        payload = {'tjp_content': tjp_content, 'timeout': timeout}
+        if include_files:
+            payload['include_files'] = include_files
         try:
             resp = requests.post(
                 f'{base_url}/schedule',
-                json={'tjp_content': tjp_content, 'timeout': timeout},
+                json=payload,
                 timeout=timeout + 15,
             )
             resp.raise_for_status()
@@ -112,7 +126,65 @@ class ProjectProject(models.Model):
                     detail = err.get('stderr', '') or err.get('error', '')
             except Exception:
                 pass
+            unscheduled = self._TJ_UNSCHEDULED_RE.search(detail)
+            if unscheduled and self.id:
+                message = self._tj_unscheduled_message(int(unscheduled.group(1)))
+                self.message_post(body=message.replace('\n', '<br/>'))
+                raise UserError(message)
             raise UserError(_('Error del microservicio TJ3: %s\n%s') % (str(e), detail))
+
+    _TJ_UNSCHEDULED_RE = re.compile(r'(\d+)\s+tasks? could not be scheduled')
+
+    def _tj_unscheduled_message(self, n_unscheduled):
+        self.ensure_one()
+        start = self.tj_now or fields.Date.today()
+        current_end = self._tjp_project_end_date(start)
+        message = _(
+            '%(n)d tarea(s) no entran en el horizonte de planificación actual '
+            '(%(start)s → %(end)s): hay más esfuerzo asignado a los recursos '
+            'del que pueden cubrir en ese plazo.'
+        ) % {'n': n_unscheduled, 'start': start, 'end': current_end}
+        suggested = self._tjp_suggest_horizon(start)
+        if suggested and suggested > current_end:
+            message += '\n' + _(
+                'Estimación propia (TaskJuggler no calcula este valor): '
+                'extienda el campo "Horizonte de planificación" hasta al '
+                'menos %(date)s, o agregue más recursos a las tareas.'
+            ) % {'date': suggested}
+        else:
+            message += '\n' + _(
+                'Extienda el campo "Horizonte de planificación" o agregue '
+                'más recursos a las tareas.'
+            )
+        return message
+
+    def _tjp_suggest_horizon(self, start):
+        """Estimación propia (no la calcula TJ3) de hasta cuándo extender el
+        horizonte para que el esfuerzo del recurso más cargado entre."""
+        self.ensure_one()
+        worst_days = 0.0
+        for user in self._tj_project_users():
+            hours = sum(
+                t.allocated_hours for t in self.task_ids
+                if user in t.user_ids and not t.child_ids
+            )
+            if not hours:
+                continue
+            employee = self.env['hr.employee'].sudo().search(
+                [('user_id', '=', user.id)], limit=1
+            )
+            calendar = employee.resource_calendar_id if employee else False
+            weekly_hours = 0.0
+            if calendar:
+                weekly_hours = sum(
+                    att.hour_to - att.hour_from for att in calendar.attendance_ids
+                )
+            weekly_hours = weekly_hours or 40.0
+            worst_days = max(worst_days, (hours / weekly_hours) * 7)
+        if not worst_days:
+            return None
+        buffer_days = max(worst_days * 0.15, 14)
+        return start + timedelta(days=int(worst_days + buffer_days))
 
     def action_view_gantt(self):
         self.ensure_one()
@@ -138,42 +210,58 @@ class ProjectProject(models.Model):
 
     def _generate_tjp(self):
         self.ensure_one()
+        scenarios = self.scenario_ids  # snapshot once — both header and reports must agree
         lines = []
-        lines += self._tjp_project_header()
-        for res in self.resource_ids:
-            lines += self._tjp_resource_block(res)
-        for scenario in self.scenario_ids:
+        lines += self._tjp_project_header(scenarios)
+        for user in self._tj_project_users():
+            lines += self._tjp_resource_block(user)
+        for scenario in scenarios:
             lines += self._tjp_scenario_supplement(scenario)
         for task in self.task_ids.filtered(
             lambda t: not t.parent_id
         ).sorted('sequence'):
             lines += self._tjp_task_block(task, depth=0)
-        lines += self._tjp_reports()
+        lines += self._tjp_reports(scenarios)
         return '\n'.join(lines)
 
-    def _tjp_project_header(self):
+    def _tjp_project_header(self, scenarios=None):
+        if scenarios is None:
+            scenarios = self.scenario_ids
         proj_id = f'p{self.id}'
         name = (self.name or 'Project').replace('"', "'")
         start = self.tj_now or fields.Date.today()
         end = self._tjp_project_end_date(start)
-        tz = (self.tj_timezone or 'UTC').replace('_', ' ')
+        tz = self.tj_timezone or 'UTC'
 
         lines = [
             f'project {proj_id} "{name}" {start} - {end} {{',
             f'  timezone "{tz}"',
             f'  now {start}',
         ]
-        if not self.scenario_ids:
+        if not scenarios:
             lines.append('  scenario plan "Plan"')
         else:
-            for sc in self.scenario_ids:
-                sc_id = self._tjp_scenario_id(sc)
-                sc_name = (sc.name or 'Scenario').replace('"', "'")
-                lines.append(f'  scenario {sc_id} "{sc_name}"')
+            # TJ3 allows only one top-level scenario; alternates must be
+            # nested inside it (children inherit the baseline) or the
+            # parser only keeps the last sibling declaration.
+            root, *alternates = scenarios
+            root_id = self._tjp_scenario_id(root)
+            root_name = (root.name or 'Scenario').replace('"', "'")
+            if alternates:
+                lines.append(f'  scenario {root_id} "{root_name}" {{')
+                for sc in alternates:
+                    sc_id = self._tjp_scenario_id(sc)
+                    sc_name = (sc.name or 'Scenario').replace('"', "'")
+                    lines.append(f'    scenario {sc_id} "{sc_name}"')
+                lines.append('  }')
+            else:
+                lines.append(f'  scenario {root_id} "{root_name}"')
         lines += ['}', '']
         return lines
 
     def _tjp_project_end_date(self, start):
+        if self.tj_end_date and self.tj_end_date > start:
+            return self.tj_end_date
         latest = None
         for task in self.task_ids:
             if task.date_deadline and (latest is None or task.date_deadline > latest):
@@ -187,31 +275,35 @@ class ProjectProject(models.Model):
         except ImportError:
             return start + timedelta(days=730)
 
-    def _tjp_resource_block(self, res):
-        res_id = self._tjp_resource_id(res.partner_id.id)
-        res_name = (res.partner_id.name or 'Resource').replace('"', "'")
+    def _tj_project_users(self):
+        """res.users deduplicado a partir de todas las asignaciones de tarea del
+        proyecto. Cualquier usuario asignado a una tarea es automáticamente un
+        recurso TJ3, sin paso de registro previo."""
+        self.ensure_one()
+        users = self.env['res.users']
+        for task in self.task_ids:
+            users |= task.user_ids
+        return users
+
+    def _tjp_resource_block(self, user):
+        res_id = self._tjp_resource_id(user.partner_id.id)
+        res_name = (user.partner_id.name or user.name or 'Resource').replace('"', "'")
+        employee = self.env['hr.employee'].sudo().search(
+            [('user_id', '=', user.id)], limit=1
+        )
 
         lines = [f'resource {res_id} "{res_name}" {{']
 
-        if res.base_efficiency and res.base_efficiency != 1.0:
-            lines.append(f'  efficiency {res.base_efficiency:.2f}')
+        if employee and employee.tj_base_efficiency and employee.tj_base_efficiency != 1.0:
+            lines.append(f'  efficiency {employee.tj_base_efficiency:.2f}')
 
-        if res.daily_max_hours:
-            lines.append(f'  limits {{ dailymax {res.daily_max_hours:.1f}h }}')
-
-        if res.source == 'hr':
-            lines += self._tjp_hr_schedule(res)
-        else:
-            lines += self._tjp_manual_schedule(res)
+        lines += self._tjp_hr_schedule(employee)
 
         lines += ['}', '']
         return lines
 
-    def _tjp_hr_schedule(self, res):
+    def _tjp_hr_schedule(self, employee):
         lines = []
-        employee = self.env['hr.employee'].search(
-            [('address_home_id', '=', res.partner_id.id)], limit=1
-        )
         if not employee:
             return lines
 
@@ -250,34 +342,6 @@ class ProjectProject(models.Model):
                 lines.append(f'  workinghours {tj_day} off')
         return lines
 
-    def _tjp_manual_schedule(self, res):
-        lines = []
-        if res.shift_ids:
-            day_shifts = defaultdict(list)
-            for shift in res.shift_ids:
-                day_shifts[shift.day_of_week].append((shift.hour_from, shift.hour_to))
-            for dow in _DOW_ORDER:
-                if dow in day_shifts:
-                    for h_from, h_to in sorted(day_shifts[dow]):
-                        lines.append(
-                            f'  workinghours {dow}'
-                            f' {self._float_to_hhmm(h_from)}'
-                            f' - {self._float_to_hhmm(h_to)}'
-                        )
-                else:
-                    lines.append(f'  workinghours {dow} off')
-        else:
-            # Default Mon–Fri 9–17 when no shifts are defined
-            for dow in ['mon', 'tue', 'wed', 'thu', 'fri']:
-                lines.append(f'  workinghours {dow} 9:00 - 17:00')
-            for dow in ['sat', 'sun']:
-                lines.append(f'  workinghours {dow} off')
-
-        for vacation in res.vacation_ids:
-            lines.append(f'  leaves vacation {vacation.date_from} - {vacation.date_to}')
-
-        return lines
-
     def _tjp_scenario_supplement(self, scenario):
         """supplement resource blocks para eficiencias por escenario."""
         lines = []
@@ -307,19 +371,19 @@ class ProjectProject(models.Model):
             lines.append(f'{ind}  milestone')
         elif not child_tasks:
             # Leaf task: emit effort/duration and allocations
-            if task.planned_hours:
+            if task.allocated_hours:
                 allocate_lines = self._tjp_allocate(task)
                 if allocate_lines:
-                    effort_d = task.planned_hours / 8.0
+                    effort_d = task.allocated_hours / 8.0
                     if effort_d < 0.125:
-                        lines.append(f'{ind}  effort {task.planned_hours:.2f}h')
+                        lines.append(f'{ind}  effort {task.allocated_hours:.2f}h')
                     else:
                         lines.append(f'{ind}  effort {effort_d:.2f}d')
                     for al in allocate_lines:
                         lines.append(f'{ind}  {al}')
                 else:
                     # No resource assigned → use duration (TJ3 needs resource for effort)
-                    duration_d = task.planned_hours / 8.0
+                    duration_d = task.allocated_hours / 8.0
                     lines.append(f'{ind}  duration {duration_d:.2f}d')
 
         # Dependencies (FS only in v1; TJ3 default dependency type)
@@ -337,30 +401,16 @@ class ProjectProject(models.Model):
         return lines
 
     def _tjp_allocate(self, task):
-        resource_map = {
-            res.partner_id.id: self._tjp_resource_id(res.partner_id.id)
-            for res in self.resource_ids
-        }
-        primary_ids = [
-            resource_map[u.partner_id.id]
-            for u in task.user_ids
-            if u.partner_id.id in resource_map
-        ]
-        if not primary_ids:
+        if not task.user_ids:
             return []
+        ids = [self._tjp_resource_id(u.partner_id.id) for u in task.user_ids]
+        return [f'allocate {", ".join(ids)}']
 
-        alt_id = resource_map.get(
-            task.alternative_assignee_id.id
-        ) if task.alternative_assignee_id else None
-
-        if alt_id:
-            alts = [alt_id] + [r for r in primary_ids[1:]]
-            return [f'allocate {primary_ids[0]} {{ alternative {", ".join(alts)} }}']
-        return [f'allocate {", ".join(primary_ids)}']
-
-    def _tjp_reports(self):
+    def _tjp_reports(self, scenarios=None):
         """One taskreport per scenario so each CSV file maps to exactly one scenario."""
-        if not self.scenario_ids:
+        if scenarios is None:
+            scenarios = self.scenario_ids
+        if not scenarios:
             return [
                 'taskreport "schedule_plan" {',
                 '  formats csv',
@@ -370,7 +420,7 @@ class ProjectProject(models.Model):
                 '',
             ]
         lines = []
-        for sc in self.scenario_ids:
+        for sc in scenarios:
             sc_id = self._tjp_scenario_id(sc)
             lines += [
                 f'taskreport "schedule_{sc_id}" {{',
@@ -384,9 +434,17 @@ class ProjectProject(models.Model):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _tjp_resource_id(partner_id):
-        return f'res{partner_id}'
+    def _tjp_resource_id(self, partner_id):
+        user = self.env['res.users'].sudo().search(
+            [('partner_id', '=', partner_id)], limit=1
+        )
+        if not user:
+            partner = self.env['res.partner'].browse(partner_id)
+            raise UserError(_(
+                'No se encontró un usuario Odoo para el contacto "%s" (id %s). '
+                'Todo recurso TJ3 debe corresponder a un usuario existente.'
+            ) % (partner.name or '?', partner_id))
+        return f'u{user.id}'
 
     @staticmethod
     def _tjp_task_id(task):
@@ -431,7 +489,29 @@ class ProjectProject(models.Model):
                 continue
             self._import_scenario_csv(csv_content, scenario)
             imported += 1
+        self._sync_gantt_dates()
         return imported
+
+    def _sync_gantt_dates(self):
+        """Push the baseline scenario's schedule into the standard Gantt
+        fields — insight.task.schedule alone isn't read by any Gantt view.
+        date_deadline is a base `project` field; planned_date_begin only
+        exists when `project_enterprise` is installed (not a dependency of
+        this module), so it's only written when present."""
+        self.ensure_one()
+        baseline = self.scenario_ids.filtered('is_baseline')[:1]
+        if not baseline:
+            return
+        schedules = self.env['insight.task.schedule'].search([
+            ('scenario_id', '=', baseline.id),
+            ('task_id.project_id', '=', self.id),
+        ])
+        has_planned_date_begin = 'planned_date_begin' in self.env['project.task']._fields
+        for schedule in schedules:
+            vals = {'date_deadline': schedule.end_scheduled}
+            if has_planned_date_begin:
+                vals['planned_date_begin'] = schedule.start_scheduled
+            schedule.task_id.write(vals)
 
     def _import_scenario_csv(self, csv_content, scenario):
         """Parse a TJ3 CSV report and upsert insight.task.schedule records."""
@@ -441,15 +521,17 @@ class ProjectProject(models.Model):
             ('task_id.project_id', '=', self.id),
         ]).unlink()
 
-        tz_name = (self.tj_timezone or 'UTC').replace(' ', '_')
+        tz_name = self.tj_timezone or 'UTC'
         valid_task_ids = set(
             self.env['project.task'].search([('project_id', '=', self.id)]).ids
         )
 
         vals_list = []
-        reader = csv.DictReader(io.StringIO(csv_content))
+        first_line = csv_content.split('\n')[0] if csv_content else ''
+        delimiter = ';' if ';' in first_line else ','
+        reader = csv.DictReader(io.StringIO(csv_content), delimiter=delimiter)
         for row in reader:
-            norm = {k.strip().lower(): (v or '').strip() for k, v in row.items()}
+            norm = {k.strip().lower(): (v or '').strip() for k, v in row.items() if k is not None}
             task_odoo_id = self._parse_task_id_from_tj_id(norm.get('id', ''))
             if not task_odoo_id or task_odoo_id not in valid_task_ids:
                 continue

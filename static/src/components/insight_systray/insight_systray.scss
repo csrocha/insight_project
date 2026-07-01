@@ -1,0 +1,34 @@
+.o_insight_systray {
+    .o_insight_chip {
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+        font-weight: normal;
+        font-size: 0.8125rem;
+        line-height: 1.2;
+        padding: 0.3rem 0.5rem;
+        white-space: nowrap;
+        vertical-align: middle;
+    }
+
+    .o_insight_chip_text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    // The task name can be arbitrarily long — cap it so it never crowds out
+    // the rest of the systray, and let the hovercard show the full text.
+    .o_insight_chip-task .o_insight_chip_text {
+        max-width: 20vw;
+    }
+
+    .o_insight_task_menu {
+        width: 280px;
+        white-space: normal;
+    }
+
+    .o_insight_task_hint {
+        padding: 0.25rem 0.75rem 0.5rem;
+    }
+}
