@@ -1,4 +1,11 @@
 .o_insight_systray {
+    // The navbar's button base centers its children instead of stretching
+    // them, which leaves the colored chip shorter than the button itself.
+    // Stretch so the chip's background fills the full systray entry height.
+    > .dropdown-toggle {
+        align-items: stretch;
+    }
+
     .o_insight_chip {
         display: inline-flex;
         align-items: center;
@@ -7,6 +14,7 @@
         font-size: 0.8125rem;
         line-height: 1.2;
         padding: 0.3rem 0.5rem;
+        border-radius: 0.375rem;
         white-space: nowrap;
         vertical-align: middle;
     }

@@ -9,6 +9,69 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.6.0.2] - 2026-07-02
+
+### Prompt
+
+> "Quiero que revises el HTML del systray del botón de tareas... Quiero que
+> el botón de tareas tenga la misma estructura de HTML [que el de chat]...
+> saques el botón o ícono de proyecto... coloca el botón de descanso dentro
+> del dropdown como la primera opción" → "el botón... no ocupa el 100% del
+> espacio asignado. Quisiera que sí ocupe todo el espacio" → "Encontré el
+> problema. El botón se le está aplicando una transformación por la
+> siguiente regla de CSS: `.o_main_navbar .o_menu_systray .badge { ...
+> transform: translate(-0.6em, -30%); }`"
+
+### Discusión de diseño
+
+- **Estructura del systray alineada con el patrón nativo de Odoo**: el
+  chip de proyecto, el dropdown de tareas, el chip de tiempo y el botón de
+  descanso vivían como hermanos dentro de un `<div class="o_insight_systray
+  d-flex ...">`. El systray de chat (`o-mail-DiscussSystray-class`) en
+  cambio usa el propio `<Dropdown class="...">` como raíz. Se replicó ese
+  patrón: el componente `Dropdown` de `insight_systray.xml` ahora es el
+  elemento raíz (con `class="'o_insight_systray'"`, aplicado por el prop
+  `class` del componente al `div.o-dropdown.dropdown` externo, igual que
+  hace `useDiscussSystray()`), sin wrapper adicional.
+- **Chip de proyecto eliminado, botón de descanso movido dentro del
+  dropdown**: por pedido explícito, solo queda visible el botón de tarea.
+  "Descanso" pasó de ser un `<button>` suelto con solo el ícono de pausa a
+  ser el primer `DropdownItem` del menú, con texto explícito ("Descanso") e
+  ícono. El chip de tiempo transcurrido (⏱) se conservó dentro del propio
+  toggler junto al chip de tarea, para no perder esa información visible
+  sin abrir el dropdown.
+- **El chip no llenaba la altura del botón del systray**: la base de
+  entradas del navbar (`%-main-navbar-entry-base` en
+  `navbar.variables.scss`) fija `align-items: center` en el
+  `button.dropdown-toggle`, centrando los chips en vez de estirarlos.
+  Se sobreescribió a `align-items: stretch` solo dentro de
+  `.o_insight_systray > .dropdown-toggle` para que el fondo de color llene
+  el alto completo de la entrada, sin tocar el navbar global.
+- **Causa real de la desalineación — colisión con `.o_menu_systray
+  .badge`**: los chips usaban la clase `badge` de Bootstrap solo para
+  heredar `text-bg-danger`/`text-bg-light`, pero esa clase también matchea
+  la regla global `.o_main_navbar .o_menu_systray .badge`, pensada para el
+  puntito de notificación que flota sobre un ícono (`margin-right: -.5em`,
+  `transform: translate(-0.6em, -30%)`). Aplicado a un chip de ancho
+  completo, ese `transform` lo desplazaba fuera de su caja. Se quitó
+  `badge` de ambos chips (`o_insight_chip`, `o_insight_chip-task`),
+  dejando solo `text-bg-*` (utilidad de Bootstrap 5 independiente de
+  `.badge`), y se agregó `border-radius: 0.375rem` a `.o_insight_chip` en
+  `insight_systray.scss` para no perder la única propiedad visual que sí
+  aportaba `.badge` y que no teníamos ya cubierta.
+
+### Corregido
+
+- `insight_systray.xml`: `Dropdown` como raíz del template (sin `<div>`
+  envolvente), chip de proyecto eliminado, "Descanso" como primer
+  `DropdownItem` con texto explícito.
+- `insight_systray.scss`: `align-items: stretch` en el toggler y
+  `border-radius` en `.o_insight_chip` para compensar la pérdida de
+  `.badge`; se quitó `badge` de los chips para evitar la colisión con el
+  selector global de notificaciones del navbar.
+
+---
+
 ## [17.0.6.0.1] - 2026-07-01
 
 ### Prompt
