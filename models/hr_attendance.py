@@ -8,7 +8,7 @@ class HrAttendance(models.Model):
     def write(self, vals):
         res = super().write(vals)
         if vals.get('check_out'):
-            sessions = self.env['insight.user.session'].sudo().search([
+            sessions = self.env['work.item.session'].sudo().search([
                 ('user_id', 'in', self.employee_id.user_id.ids),
                 ('state', '=', 'active'),
             ])

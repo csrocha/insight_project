@@ -9,6 +9,87 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.7.0.0] - 2026-07-03
+
+### Prompt
+
+> "Me gustaría que los tickets también aparezcan en la lista de tareas en
+> el dropdown [...]. El timer debe ir para adelante. Y el cambio de tarea a
+> ticket, y de ticket a tarea, debería ser natural [...] No debería
+> depender de helpdesk."
+
+### Discusión de diseño
+
+- **Systray partido en 3 addons con un contrato de mixin**, no en un solo
+  addon con `if model == ...`: se crea `work_item_systray` (base genérica:
+  sesión, cronómetro que por defecto siempre cuenta hacia adelante, wizard
+  de cambio) que define `work.item.mixin` — cualquier modelo lo implementa
+  (`_work_item_label`, `_work_item_close`, `_work_item_candidates`) para
+  volverse elegible como work item. `work.item.session` descubre en
+  runtime, vía el registry de Odoo, qué modelos lo implementan; ningún
+  proveedor toca `work.item.session` directamente.
+- **`insight_project` deja de ser el dueño del systray**: se descubrió que
+  `allocated_hours` (core `project`) y `remaining_hours` (`hr_timesheet`)
+  no son específicos de TaskJuggler, así que la implementación genérica de
+  `project.task` como work item (candidatos, cierre → parte de horas,
+  cuenta regresiva) se extrajo a un addon nuevo, `work_item_task`. Este
+  addon queda como una capa fina encima: solo decora con ⚡ camino crítico
+  / ❗ revisión pendiente (`_work_item_label`/`_work_item_candidates` con
+  `super()`) y aplica `blocked = True` al cerrar si corresponde.
+- **`work_item_helpdesk`** (nuevo, fuera de este addon) implementa el mismo
+  mixin sobre `helpdesk.ticket`: candidatos = mis tickets abiertos, cierre
+  = mensaje en el chatter del ticket + parte de horas opcional si
+  `helpdesk_timesheet` está instalado (detectado por la presencia del
+  campo `account.analytic.line.helpdesk_ticket_id`, sin declarar esa
+  dependencia). El cronómetro nunca cuenta regresiva para tickets porque
+  ese addon no aporta `allocated_hours`/`remaining_hours` — el
+  comportamiento ascendente es el default del base, no algo que haya que
+  pedir.
+- **Se descartó reusar el systray nativo de `mail`** (`ActivityMenu` /
+  `res.users.systray_get_activities()`): es de recordatorios con
+  vencimiento que aparecen y desaparecen solos; la idea acá es la opuesta,
+  encasillar activamente al usuario en un work item hasta que decida
+  cambiar.
+- **Migración de datos**: `insight.user.session` e
+  `insight.session.message.template` ya tenían datos reales bajo
+  `insight_project`. Se migran con
+  `migrations/17.0.7.0.0/pre-migrate.py`: rename de tabla, `task_id`
+  (Many2one) → `work_item_ref` (Reference), y reasignación de los
+  `ir_model_data` (módulo + nombre del xmlid) de modelo/campos que
+  sobreviven hacia `work_item_systray`, para que la próxima actualización
+  no los borre por "ya no declarados". `insight.session.switch.wizard`
+  (transient, sin datos que preservar) no se migra.
+
+### Agregado
+
+- `models/project_task.py`: `_work_item_label`/`_work_item_candidates`/
+  `_work_item_close` decorando el contrato de `work_item_task` con
+  ⚡/❗/`blocked`.
+- `migrations/17.0.7.0.0/pre-migrate.py`.
+
+### Quitado
+
+- `models/insight_user_session.py`, `models/insight_session_message_template.py`,
+  `static/src/components/insight_systray/` (JS/XML/SCSS del widget): todo
+  migrado a `work_item_systray`.
+- `action_switch_to_session` de `project.task`: ahora la aporta
+  `work_item_task` (misma tarea, mismo comportamiento).
+
+### Cambiado
+
+- `depends`: se agrega `work_item_task` (que a su vez depende de
+  `work_item_systray` + `project` + `hr_timesheet`).
+- `models/insight_session_switch_wizard.py`: pasa de definir el modelo
+  completo a `_inherit = 'work.item.session.switch.wizard'`, agregando
+  solo `new_task_name`/`new_task_project_id` (crear tarea al vuelo).
+- `models/hr_attendance.py`: busca sesiones en `work.item.session` en vez
+  de `insight.user.session` al hacer check-out.
+- `security/`: la regla "ve todas las sesiones" y las filas de acceso de
+  manager de proyecto pasan a apuntar a los modelos ahora dueños de
+  `work_item_systray` (`work_item_systray.model_work_item_session`, etc.).
+
+---
+
 ## [17.0.6.0.3] - 2026-07-03
 
 ### Prompt

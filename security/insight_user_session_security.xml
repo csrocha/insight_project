@@ -1,15 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <record id="rule_insight_user_session_own" model="ir.rule">
-        <field name="name">insight.user.session: solo la propia</field>
-        <field name="model_id" ref="model_insight_user_session"/>
-        <field name="domain_force">[('user_id', '=', user.id)]</field>
-        <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-    </record>
-
-    <record id="rule_insight_user_session_manager" model="ir.rule">
-        <field name="name">insight.user.session: manager ve todas</field>
-        <field name="model_id" ref="model_insight_user_session"/>
+    <record id="rule_work_item_session_project_manager" model="ir.rule">
+        <field name="name">work.item.session: manager de proyecto ve todas</field>
+        <field name="model_id" ref="work_item_systray.model_work_item_session"/>
         <field name="domain_force">[(1, '=', 1)]</field>
         <field name="groups" eval="[(4, ref('project.group_project_manager'))]"/>
     </record>

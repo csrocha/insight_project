@@ -2,12 +2,12 @@
 {
     'name': "Insight Project — TaskJuggler Integration",
     'summary': "Schedules Odoo projects via TaskJuggler 3 microservice",
-    'version': '17.0.6.0.3',
+    'version': '17.0.7.0.0',
     'category': 'Project',
     'author': "Cristian S. Rocha <csrocha@gmail.com>",
     'website': "https://github.com/csrocha/insight_project",
     'license': 'OPL-1',
-    'depends': ['project', 'hr_holidays', 'hr_attendance', 'project_timesheet_holidays'],
+    'depends': ['work_item_task', 'project', 'hr_holidays', 'hr_attendance', 'project_timesheet_holidays'],
     'data': [
         'security/ir.model.access.csv',
         'security/insight_user_session_security.xml',
@@ -23,11 +23,6 @@
         'views/insight_session_switch_wizard_views.xml',
         'views/menus.xml',
     ],
-    'assets': {
-        'web.assets_backend': [
-            'insight_project/static/src/**/*',
-        ],
-    },
     'installable': True,
     'application': False,
 }
