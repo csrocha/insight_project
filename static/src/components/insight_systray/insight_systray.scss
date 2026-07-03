@@ -39,4 +39,40 @@
     .o_insight_task_hint {
         padding: 0.25rem 0.75rem 0.5rem;
     }
+
+    // Colores fijos (pasteles, sin titileo) para el chip de tiempo restante.
+    // El orden refleja qué tan cerca está la tarea de agotar su presupuesto
+    // de horas asignadas: neutral (sin presupuesto) → ok → warning →
+    // critical (todavía positivo, por debajo del 15%) → overtime (ya en
+    // negativo, tiempo excedido).
+    .o_insight_time-neutral {
+        background-color: #f8f9fa;
+        color: #495057;
+    }
+
+    .o_insight_time-ok {
+        background-color: #dff5e1;
+        color: #1b5e20;
+    }
+
+    .o_insight_time-warning {
+        background-color: #fff3cd;
+        color: #7a5b00;
+    }
+
+    .o_insight_time-critical {
+        background-color: #fde2e1;
+        color: #a12622;
+    }
+
+    .o_insight_time-overtime {
+        background-color: #f8c4c2;
+        color: #7a1614;
+        font-weight: 600;
+    }
+
+    .o_insight_task-review {
+        color: #b45309;
+        font-weight: bold;
+    }
 }

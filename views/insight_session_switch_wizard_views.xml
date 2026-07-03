@@ -7,28 +7,24 @@
             <form string="Cambiar de tarea">
                 <field name="mode" invisible="1"/>
                 <sheet>
-                    <group invisible="not current_task_id">
-                        <group string="Tarea que dejás">
-                            <field name="current_task_id" readonly="1"/>
-                            <field name="previous_intent_note" readonly="1"
-                                   invisible="not previous_intent_note"/>
-                            <field name="outcome_template_id"/>
-                            <field name="outcome_text" nolabel="1"
-                                   placeholder="¿Qué se logró en esta tarea?"/>
-                        </group>
+                    <group string="Tarea que dejás" invisible="not current_task_id">
+                        <field name="current_task_id" readonly="1"/>
+                        <field name="previous_intent_note" readonly="1"
+                               invisible="not previous_intent_note"/>
+                        <field name="outcome_template_id"/>
+                        <field name="outcome_text" nolabel="1" colspan="2"
+                               placeholder="¿Qué se logró en esta tarea?"/>
                     </group>
 
-                    <group invisible="mode != 'switch'">
-                        <group string="Tarea que iniciás">
-                            <field name="target_task_id"/>
-                            <field name="new_task_name"
-                                   invisible="target_task_id"/>
-                            <field name="new_task_project_id"
-                                   invisible="target_task_id or not new_task_name"/>
-                            <field name="intent_template_id"/>
-                            <field name="intent_text" nolabel="1"
-                                   placeholder="¿Qué se va a hacer en esta tarea?"/>
-                        </group>
+                    <group string="Tarea que iniciás" invisible="mode != 'switch'">
+                        <field name="target_task_id"/>
+                        <field name="new_task_name"
+                               invisible="target_task_id"/>
+                        <field name="new_task_project_id"
+                               invisible="target_task_id or not new_task_name"/>
+                        <field name="intent_template_id"/>
+                        <field name="intent_text" nolabel="1" colspan="2"
+                               placeholder="¿Qué se va a hacer en esta tarea?"/>
                     </group>
                 </sheet>
                 <footer>
@@ -49,5 +45,6 @@
         <field name="res_model">insight.session.switch.wizard</field>
         <field name="view_mode">form</field>
         <field name="target">new</field>
+        <field name="context">{'dialog_size': 'extra-large'}</field>
     </record>
 </odoo>

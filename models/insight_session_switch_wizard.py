@@ -57,10 +57,10 @@ class InsightSessionSwitchWizard(models.TransientModel):
         outcome_note = False
         if self.current_task_id:
             outcome_note = (self.outcome_text or '').strip() or False
-        outcome_kanban_state = self.outcome_template_id.kanban_state or False
+        outcome_blocked = self.outcome_template_id.sets_blocked or False
 
         if self.mode == 'break':
-            session.take_break(outcome_note=outcome_note, outcome_kanban_state=outcome_kanban_state)
+            session.take_break(outcome_note=outcome_note, outcome_blocked=outcome_blocked)
             return {'type': 'ir.actions.act_window_close'}
 
         target = self.target_task_id
@@ -78,6 +78,6 @@ class InsightSessionSwitchWizard(models.TransientModel):
         intent_note = (self.intent_text or '').strip() or False
         session.switch_task(
             target.id, outcome_note=outcome_note,
-            outcome_kanban_state=outcome_kanban_state, intent_note=intent_note,
+            outcome_blocked=outcome_blocked, intent_note=intent_note,
         )
         return {'type': 'ir.actions.act_window_close'}

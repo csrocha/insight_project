@@ -56,31 +56,32 @@ class InsightUserSession(models.Model):
         return self._get_or_create_for_user().get_systray_data()
 
     @api.model
-    def action_switch_task(self, task_id, outcome_note=None, outcome_kanban_state=None, intent_note=None):
+    def action_switch_task(self, task_id, outcome_note=None, outcome_blocked=None, intent_note=None):
         session = self._get_or_create_for_user()
         session.switch_task(
             task_id, outcome_note=outcome_note,
-            outcome_kanban_state=outcome_kanban_state, intent_note=intent_note,
+            outcome_blocked=outcome_blocked, intent_note=intent_note,
         )
         return session.get_systray_data()
 
     @api.model
-    def action_take_break(self, outcome_note=None, outcome_kanban_state=None):
+    def action_take_break(self, outcome_note=None, outcome_blocked=None):
         session = self._get_or_create_for_user()
-        session.take_break(outcome_note=outcome_note, outcome_kanban_state=outcome_kanban_state)
+        session.take_break(outcome_note=outcome_note, outcome_blocked=outcome_blocked)
         return session.get_systray_data()
 
-    def switch_task(self, task_id, outcome_note=None, outcome_kanban_state=None, intent_note=None):
-        """Cierra el período activo (si existe, con su nota/estado de cierre)
+    def switch_task(self, task_id, outcome_note=None, outcome_blocked=None, intent_note=None):
+        """Cierra el período activo (si existe, con su nota/bloqueo de cierre)
         y abre uno nuevo en task_id (con la nota de intención)."""
         self.ensure_one()
         task = self.env['project.task'].browse(task_id)
         if self.user_id not in task.user_ids:
             task.write({'user_ids': [(4, self.user_id.id)]})
-        self._close_active_period(outcome_note, outcome_kanban_state)
-        # Retomar una tarea activamente la "desbloquea" visualmente; el
-        # motivo del bloqueo queda igual en el parte de horas / chatter.
-        task.kanban_state = 'normal'
+        self._close_active_period(outcome_note, outcome_blocked)
+        # Retomar una tarea activamente la "desbloquea"; el motivo del
+        # bloqueo/desbloqueo queda igual en el parte de horas / chatter
+        # (la nota de intención capturada abajo cumple ese rol).
+        task.blocked = False
         self.write({
             'project_id': task.project_id.id,
             'task_id': task.id,
@@ -90,10 +91,10 @@ class InsightUserSession(models.Model):
         })
         self._notify_systray()
 
-    def take_break(self, outcome_note=None, outcome_kanban_state=None):
+    def take_break(self, outcome_note=None, outcome_blocked=None):
         """Cierra el período activo (si existe) y pasa a estado Descanso."""
         self.ensure_one()
-        self._close_active_period(outcome_note, outcome_kanban_state)
+        self._close_active_period(outcome_note, outcome_blocked)
         self.write({
             'project_id': False,
             'task_id': False,
@@ -111,15 +112,15 @@ class InsightUserSession(models.Model):
             self.user_id.partner_id, 'insight_project.session_updated', self.get_systray_data()
         )
 
-    def _close_active_period(self, outcome_note=None, outcome_kanban_state=None):
-        """Si el período actual estaba activo, aplica el estado kanban
-        elegido a la tarea que se deja y registra un account.analytic.line
+    def _close_active_period(self, outcome_note=None, outcome_blocked=None):
+        """Si el período actual estaba activo, marca la tarea que se deja
+        como bloqueada (si corresponde) y registra un account.analytic.line
         combinando la intención de inicio con el resultado de cierre."""
         self.ensure_one()
         if self.state != 'active' or not self.task_id or not self.start_datetime:
             return
-        if outcome_kanban_state:
-            self.task_id.kanban_state = outcome_kanban_state
+        if outcome_blocked:
+            self.task_id.blocked = True
         employee = self.env['hr.employee'].search(
             [('user_id', '=', self.user_id.id)], limit=1
         )
@@ -159,6 +160,8 @@ class InsightUserSession(models.Model):
             'task_name': self.task_id.name,
             'start_datetime': fields.Datetime.to_string(self.start_datetime) if self.start_datetime else False,
             'is_critical_path': bool(self.task_id.is_critical_path) if self.task_id else False,
+            'allocated_hours': self.task_id.allocated_hours if self.task_id else 0.0,
+            'remaining_hours': self.task_id.remaining_hours if self.task_id else 0.0,
             'task_description': _html_to_text(self.task_id.description) if self.task_id else '',
             'tasks': self._get_week_tasks(),
         }
@@ -197,5 +200,6 @@ class InsightUserSession(models.Model):
             'project_id': t.project_id.id,
             'project_name': t.project_id.name,
             'is_critical_path': bool(t.is_critical_path),
+            'needs_review': t.state == '02_changes_requested',
             'end_scheduled': fields.Datetime.to_string(t.end_scheduled),
         } for t in tasks]

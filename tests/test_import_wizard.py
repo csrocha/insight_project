@@ -54,40 +54,40 @@ class TestImportWizardParsing(TransactionCase):
                 self.assertAlmostEqual(InsightImportWizard._effort_to_hours(raw), expected)
 
     def _stages(self):
-        return object(), object(), object()  # refine, planned, done
+        return object(), object(), object()  # refine, backlog, done
 
     def test_resolve_stage_done(self):
-        refine, planned, done = self._stages()
+        refine, backlog, done = self._stages()
         result = InsightImportWizard._resolve_task_stage(
             {'complete': '100%', 'effort': '5.0d', 'resources': ['x']},
-            refine, planned, done,
+            refine, backlog, done,
         )
         self.assertIs(result, done)
 
     def test_resolve_stage_refine_no_effort_no_resources(self):
-        refine, planned, done = self._stages()
+        refine, backlog, done = self._stages()
         result = InsightImportWizard._resolve_task_stage(
             {'complete': '0%', 'effort': '0.0d', 'resources': []},
-            refine, planned, done,
+            refine, backlog, done,
         )
         self.assertIs(result, refine)
 
-    def test_resolve_stage_planned_with_effort(self):
-        refine, planned, done = self._stages()
+    def test_resolve_stage_backlog_with_effort(self):
+        refine, backlog, done = self._stages()
         result = InsightImportWizard._resolve_task_stage(
             {'complete': '50%', 'effort': '5.0d', 'resources': ['csr']},
-            refine, planned, done,
+            refine, backlog, done,
         )
-        self.assertIs(result, planned)
+        self.assertIs(result, backlog)
 
-    def test_resolve_stage_planned_no_resources_with_effort(self):
-        """Container task (effort, no resources) → planned."""
-        refine, planned, done = self._stages()
+    def test_resolve_stage_backlog_no_resources_with_effort(self):
+        """Container task (effort, no resources) → backlog."""
+        refine, backlog, done = self._stages()
         result = InsightImportWizard._resolve_task_stage(
             {'complete': '0%', 'effort': '10.0d', 'resources': []},
-            refine, planned, done,
+            refine, backlog, done,
         )
-        self.assertIs(result, planned)
+        self.assertIs(result, backlog)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ class TestImportWizardAction(TransactionCase):
         stage_refine = self.env.ref('insight_project.task_type_refine')
         self.assertEqual(task.stage_id, stage_refine)
 
-    def test_stage_planned_for_normal_task(self):
+    def test_stage_backlog_for_normal_task(self):
         wizard = self._make_wizard(tasks=[
             {'bsi': '1', 'name': 'Normal Task', 'effort': '8.0d',
              'resources': [], 'complete': '50%'},
@@ -265,5 +265,5 @@ class TestImportWizardAction(TransactionCase):
         task = self.env['project.task'].search([
             ('project_id', '=', self.project.id), ('name', '=', 'Normal Task')
         ], limit=1)
-        stage_planned = self.env.ref('insight_project.task_type_planned')
-        self.assertEqual(task.stage_id, stage_planned)
+        stage_backlog = self.env.ref('insight_project.task_type_planned')
+        self.assertEqual(task.stage_id, stage_backlog)

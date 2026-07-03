@@ -9,7 +9,7 @@
                 <field name="sequence" widget="handle"/>
                 <field name="name"/>
                 <field name="requires_detail"/>
-                <field name="kanban_state"/>
+                <field name="sets_blocked"/>
                 <field name="active"/>
             </tree>
         </field>
@@ -27,8 +27,8 @@
             <p>
                 Estas plantillas se ofrecen al cambiar de tarea desde el systray,
                 tanto para describir qué se va a hacer (al entrar) como qué se
-                logró (al salir). Las de "Al salir" pueden fijar el estado kanban
-                de la tarea que se deja.
+                logró (al salir). Las de "Al salir" pueden marcar la tarea que
+                se deja como bloqueada.
             </p>
         </field>
     </record>

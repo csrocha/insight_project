@@ -9,6 +9,67 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.6.0.3] - 2026-07-03
+
+### Prompt
+
+Release que consolida trabajo de sesión previa (bloqueo de tareas, nuevas
+etapas de kanban, cron de revisión vencida, cronómetro de horas restantes
+en el systray) junto con el pedido puntual de esta sesión:
+
+> "En la lista de mensajes de insight_project para dejar mensajes al dejar
+> una tarea agregá 'Continuo mañana'."
+
+### Discusión de diseño
+
+- **`kanban_state` reemplazado por `blocked` (boolean) en `project.task`**:
+  el estado kanban nativo de Odoo (`normal`/`done`/`blocked`) mezclaba
+  semántica visual con la de impedimento real. Se separa en un campo propio
+  que no reemplaza `stage_id` ni `state`, puede coexistir con cualquier
+  etapa/estado activo, y no almacena el motivo (queda en el chatter o en el
+  parte de horas). Se resetea a `False` al retomar activamente una tarea;
+  solo se fija a `True` desde una plantilla de cierre con `sets_blocked`.
+- **Etapas de tarea ampliadas**: "Planificada" → "Pendientes"/"Backlog", y
+  se agregan "En progreso", "En revisión" y "Cancelada" para reflejar el
+  flujo real de trabajo (documentado en el README). El importador TJP
+  registra todas las etapas en el proyecto importado, aunque solo asigne
+  automáticamente Requiere refinado/Backlog/Completada.
+- **Cron de "cambios solicitados"**: tareas activas cuya `end_scheduled`
+  (CPM) ya venció, o que son camino crítico y agotaron `remaining_hours`,
+  pasan a `02_changes_requested` para alertar que el plan quedó invalidado
+  por la realidad.
+- **Cronómetro del systray con horas restantes**: cuando la tarea tiene
+  horas asignadas, el chip de tiempo pasa de cronómetro ascendente a cuenta
+  regresiva contra el presupuesto, con clases de color fijas
+  (`neutral`/`ok`/`warning`/`critical`/`overtime`) sin parpadeo.
+- **Nueva plantilla de cierre "Continuo mañana."**: agregada a
+  `insight_session_message_templates.xml` junto a las demás opciones de
+  "Al dejar una tarea" (secuencia 70), sin `requires_detail` ni
+  `sets_blocked`.
+
+### Agregado
+
+- Campo `blocked` en `project.task`.
+- Cron `_cron_flag_changes_requested`.
+- Etapas `task_type_progress`, `task_type_review`, `task_type_cancelled`.
+- Plantilla `msg_leave_continue_tomorrow` ("Continuo mañana.").
+- Sección "Flujo de tareas" en el README documentando etapa/estado/bloqueo.
+- Colores de alerta del cronómetro y flag `needs_review` en el systray.
+
+### Cambiado
+
+- `insight_session_message_template`: `kanban_state` (selection) →
+  `sets_blocked` (boolean).
+- `insight_user_session`/`insight_session_switch_wizard`: parámetros
+  `outcome_kanban_state` renombrados a `outcome_blocked` en toda la cadena
+  de llamadas.
+- `insight_import_wizard`: variable interna `stage_planned` renombrada a
+  `stage_backlog`; registra las 6 etapas en el proyecto importado.
+- Wizard de cambio de tarea: grupos "Tarea que dejás"/"Tarea que iniciás"
+  simplificados (sin subgrupo anidado), diálogo en tamaño extra-large.
+
+---
+
 ## [17.0.6.0.2] - 2026-07-02
 
 ### Prompt

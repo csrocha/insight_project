@@ -5,12 +5,25 @@
         <field name="sequence">5</field>
     </record>
     <record id="task_type_planned" model="project.task.type">
-        <field name="name">Planificada</field>
+        <field name="name">Pendientes</field>
         <field name="sequence">10</field>
+    </record>
+    <record id="task_type_progress" model="project.task.type">
+        <field name="name">En progreso</field>
+        <field name="sequence">20</field>
+    </record>
+    <record id="task_type_review" model="project.task.type">
+        <field name="name">En revisión</field>
+        <field name="sequence">30</field>
     </record>
     <record id="task_type_done" model="project.task.type">
         <field name="name">Completada</field>
         <field name="sequence">100</field>
+        <field name="fold">True</field>
+    </record>
+    <record id="task_type_cancelled" model="project.task.type">
+        <field name="name">Cancelada</field>
+        <field name="sequence">110</field>
         <field name="fold">True</field>
     </record>
 </odoo>

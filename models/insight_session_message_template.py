@@ -18,12 +18,11 @@ class InsightSessionMessageTemplate(models.Model):
              'libre además de elegir esta plantilla (ej. "Se bloqueó la '
              'tarea porque: ___").',
     )
-    kanban_state = fields.Selection([
-        ('normal', 'A la vista (normal)'),
-        ('done', 'Lista para el siguiente paso'),
-        ('blocked', 'Bloqueada'),
-    ], string='Estado resultante de la tarea',
-        help='Solo aplica a plantillas "Al salir": estado kanban que se '
-             'asigna a la tarea que se deja al elegir esta plantilla.')
+    sets_blocked = fields.Boolean(
+        string='Marca la tarea como bloqueada',
+        help='Solo aplica a plantillas "Al salir": si está marcado, al '
+             'elegir esta plantilla la tarea que se deja queda con '
+             'blocked=True. No hay opción de "desbloquear" aquí porque '
+             'retomar una tarea activamente ya la desbloquea.')
     sequence = fields.Integer(default=10)
     active = fields.Boolean(default=True)

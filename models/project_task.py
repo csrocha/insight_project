@@ -23,6 +23,13 @@ class ProjectTask(models.Model):
     bsi = fields.Char(
         string='BSI', compute='_compute_scheduled', store=True,
     )
+    blocked = fields.Boolean(
+        string='Bloqueada', tracking=True,
+        help='Impedimento temporal que impide continuar el trabajo. No '
+             'reemplaza stage_id ni state: puede coexistir con cualquier '
+             'etapa/estado activo. El motivo se registra como comentario '
+             'en el chatter o en el parte de horas, no en este campo.',
+    )
 
     @api.depends('project_id.scenario_ids', 'project_id.scenario_ids.schedule_ids')
     def _compute_scheduled(self):
@@ -42,6 +49,29 @@ class ProjectTask(models.Model):
             task.end_scheduled = schedule.end_scheduled
             task.is_critical_path = schedule.is_critical_path
             task.bsi = schedule.bsi
+
+    @api.model
+    def _cron_flag_changes_requested(self):
+        """Pasa a 'Cambios solicitados' las tareas cuyo plan quedó invalidado
+        por la realidad: se venció la fecha de fin planificada (end_scheduled,
+        calculada por el motor CPM), o -si son camino crítico- se agotaron
+        las horas asignadas. En una tarea sin holgura, agotar el presupuesto
+        de horas también corre el cronograma aguas abajo; si no es crítica,
+        el exceso de horas queda solo como alerta visual en el chip del
+        systray, sin forzar un replanificado."""
+        open_states = ('01_in_progress', '03_approved', '04_waiting_normal')
+        overdue = self.search([
+            ('state', 'in', open_states),
+            ('end_scheduled', '!=', False),
+            ('end_scheduled', '<', fields.Datetime.now()),
+        ])
+        over_budget = self.search([
+            ('state', 'in', open_states),
+            ('is_critical_path', '=', True),
+            ('allocated_hours', '>', 0),
+            ('remaining_hours', '<=', 0),
+        ])
+        (overdue | over_budget).write({'state': '02_changes_requested'})
 
     def action_switch_to_session(self):
         """Activa esta tarea en la sesión del systray del usuario actual."""

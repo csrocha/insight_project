@@ -10,7 +10,8 @@
                 <t t-else="">✅ </t>
                 <span class="o_insight_chip_text" t-esc="state.taskName"/>
             </span>
-            <span class="o_insight_chip text-bg-light ms-1" title="Tiempo trabajado en la tarea actual">
+            <span t-attf-class="o_insight_chip ms-1 {{ state.timeColorClass }}"
+                  t-att-title="state.allocatedHours ? 'Tiempo restante estimado para la tarea actual' : 'Tiempo trabajado en la tarea actual'">
                 ⏱ <t t-esc="state.elapsed"/>
             </span>
         </t>
@@ -29,12 +30,13 @@
             <div class="dropdown-divider" t-if="state.taskId"/>
             <DropdownItem t-foreach="state.tasks" t-as="task" t-key="task.id"
                           onSelected="() => this.onSelectTask(task.id)">
-                <span t-attf-class="{{ task.is_critical_path ? 'text-danger fw-bold' : '' }}">
-                    <t t-if="task.is_critical_path">⚡ </t>
+                <span t-attf-class="{{ task.needs_review ? 'o_insight_task-review' : (task.is_critical_path ? 'text-danger fw-bold' : '') }}">
+                    <t t-if="task.needs_review">❗ </t>
+                    <t t-elif="task.is_critical_path">⚡ </t>
                     <t t-esc="task.name"/>
                 </span>
             </DropdownItem>
-            <DropdownItem t-if="!state.tasks.length" class="text-muted">
+            <DropdownItem t-if="!state.tasks.length" class="'text-muted'">
                 No hay tareas por vencer esta semana ni la próxima
             </DropdownItem>
             <div class="dropdown-divider"/>

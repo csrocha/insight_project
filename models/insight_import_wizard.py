@@ -276,10 +276,20 @@ class InsightImportWizard(models.TransientModel):
 
         # Resolve task stages and link them to this project.
         # sudo() required: stages without project_ids are restricted by record rules.
+        # task_type_planned xmlid kept stable; its stage was renamed to "Backlog".
         stage_refine = self.env.ref('insight_project.task_type_refine').sudo()
-        stage_planned = self.env.ref('insight_project.task_type_planned').sudo()
+        stage_backlog = self.env.ref('insight_project.task_type_planned').sudo()
         stage_done = self.env.ref('insight_project.task_type_done').sudo()
-        for stage in (stage_refine, stage_planned, stage_done):
+        # All stages defined for this task type must be available on the
+        # imported project's kanban, not just the ones auto-assigned below.
+        stage_progress = self.env.ref('insight_project.task_type_progress').sudo()
+        stage_review = self.env.ref('insight_project.task_type_review').sudo()
+        stage_cancelled = self.env.ref('insight_project.task_type_cancelled').sudo()
+        all_stages = (
+            stage_refine, stage_backlog, stage_progress,
+            stage_review, stage_done, stage_cancelled,
+        )
+        for stage in all_stages:
             if project.id not in stage.project_ids.ids:
                 stage.project_ids = [(4, project.id)]
 
@@ -296,7 +306,7 @@ class InsightImportWizard(models.TransientModel):
                 if user_map.get(res_id)
             ]
             stage = self._resolve_task_stage(
-                task_data, stage_refine, stage_planned, stage_done
+                task_data, stage_refine, stage_backlog, stage_done
             )
             task = self.env['project.task'].create({
                 'name': task_data['name'] or f'Tarea {bsi}',
@@ -357,7 +367,7 @@ class InsightImportWizard(models.TransientModel):
         }
 
     @staticmethod
-    def _resolve_task_stage(task_data, stage_refine, stage_planned, stage_done):
+    def _resolve_task_stage(task_data, stage_refine, stage_backlog, stage_done):
         # 100% complete → done
         raw = task_data.get('complete', '0').replace('%', '').strip()
         try:
@@ -370,7 +380,7 @@ class InsightImportWizard(models.TransientModel):
         zero_effort = not effort or re.match(r'^0+(\.0+)?[dhw]?$', effort)
         if zero_effort and not task_data.get('resources'):
             return stage_refine
-        return stage_planned
+        return stage_backlog
 
     @staticmethod
     def _bsi_sort_key(bsi):
