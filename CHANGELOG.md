@@ -9,6 +9,72 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.8.0.0] - 2026-07-04
+
+### Prompt
+
+Continuación directa de la sesión de 17.0.7.0.0. Al armar una matriz de
+funcionalidades × módulo para el ecosistema Work Item Systray completo
+(incluyendo un addon nuevo para usar el timer nativo de Odoo Enterprise),
+surgió la pregunta:
+
+> "insight_project podría no depender work_item_task, porque necesitaría?"
+
+### Discusión de diseño
+
+- **Se revierte por completo la dependencia con `work_item_task`** que se
+  había introducido en 17.0.7.0.0: `insight_project` vuelve a ser
+  TaskJuggler puro, sin saber nada del Work Item Systray.
+- **Motivo del cambio de opinión**: mantener la decoración TJ3 (⚡/❗/
+  `blocked`) adentro de `insight_project` no era arquitectónicamente malo
+  per se (la dirección de la dependencia — lo específico depende de lo
+  general — es la misma que `work_item_helpdesk → helpdesk`). Pero surgió
+  un módulo hermano nuevo, `work_item_enterprise_task` (usa el `timer.timer`
+  nativo de Odoo Enterprise en vez de escribir la `account.analytic.line`
+  a mano), que también cuelga de `work_item_task`. Para que la decoración
+  TJ3 y el timer Enterprise puedan convivir instalados a la vez sin
+  depender uno del otro ni competir por el orden de carga, la decoración
+  se extrae a un **glue module** dedicado, `work_item_task_tj3`
+  (`depends: ['insight_project', 'work_item_task']`) — el mismo patrón que
+  `sale_stock`/`sale_timesheet` en el propio Odoo.
+- **Riesgo concreto que motivó la extracción** (no solo preferencia
+  estética): si dos addons independientes sobreescriben el mismo método
+  (`_work_item_close`) sobre el mismo modelo sin un edge de dependencia
+  explícito entre ellos, el orden de combinación de clases de Odoo no está
+  garantizado — podría aplicarse la decoración correctamente hoy por
+  casualidad de orden, y dejar de aplicarse mañana sin ningún error ni
+  log, con otra instalación que reordene los módulos. El glue module, al
+  depender de ambos padres, elimina esa ambigüedad.
+- **También se revierte** todo lo que se había migrado a `insight_project`
+  en la sesión anterior y que en realidad era genérico a `project.task`,
+  no específico de TaskJuggler: el wizard de "crear tarea nueva al vuelo"
+  desde el switch, el botón "▶ Activar tarea" en form/kanban/tree, el
+  check-out de asistencia cerrando la sesión activa, y las plantillas de
+  mensaje seed. Todo eso pasa a `work_item_task`, que es su lugar natural.
+
+### Quitado
+
+- `models/insight_session_switch_wizard.py`, `models/hr_attendance.py`,
+  `security/insight_user_session_security.xml`,
+  `views/insight_session_message_template_views.xml`,
+  `views/insight_session_switch_wizard_views.xml`,
+  `data/insight_session_message_templates.xml`: migrados a
+  `work_item_task`.
+- `_work_item_label`/`_work_item_candidates`/`_work_item_close` de
+  `models/project_task.py`: migrados a `work_item_task_tj3`.
+- Botones "▶ Activar tarea" de `views/project_task_views.xml`: migrados a
+  `work_item_task` (ese botón no tiene nada de específico a TaskJuggler).
+
+### Cambiado
+
+- `depends`: se quita `work_item_task`. Vuelve a ser
+  `['project', 'hr_holidays', 'hr_attendance', 'project_timesheet_holidays']`,
+  igual que antes de 17.0.7.0.0.
+- `security/ir.model.access.csv`: se quitan las filas de acceso a modelos
+  de `work_item_systray` (ya no aplica, sin la dependencia).
+
+---
+
 ## [17.0.7.0.0] - 2026-07-03
 
 ### Prompt

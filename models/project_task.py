@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from odoo import _, models, fields, api
+from odoo import models, fields, api
 
 
 class ProjectTask(models.Model):
@@ -72,41 +72,3 @@ class ProjectTask(models.Model):
             ('remaining_hours', '<=', 0),
         ])
         (overdue | over_budget).write({'state': '02_changes_requested'})
-
-    # ── Decoración TJ3 sobre el contrato work.item.mixin ────────────────────
-    # La implementación genérica (candidatos, cierre → parte de horas,
-    # cronómetro) vive en work_item_task; acá solo se agrega ⚡ camino
-    # crítico / ❗ revisión pendiente, y el efecto de `blocked` al cerrar.
-
-    def _work_item_label(self):
-        label = super()._work_item_label()
-        if self.is_critical_path:
-            label['icon'] = '⚡'
-            label['css_class'] = 'text-danger fw-bold'
-        elif self.state == '02_changes_requested':
-            label['icon'] = '❗'
-            label['css_class'] = 'text-warning fw-bold'
-        return label
-
-    @api.model
-    def _work_item_candidates(self):
-        candidates = super()._work_item_candidates()
-        if not candidates:
-            return candidates
-        tasks_by_id = {t.id: t for t in self.browse([c['res_id'] for c in candidates])}
-        for candidate in candidates:
-            task = tasks_by_id.get(candidate['res_id'])
-            if not task:
-                continue
-            if task.is_critical_path:
-                candidate['icon'] = '⚡'
-                candidate['css_class'] = 'text-danger fw-bold'
-            elif task.state == '02_changes_requested':
-                candidate['icon'] = '❗'
-                candidate['css_class'] = 'text-warning fw-bold'
-        return candidates
-
-    def _work_item_close(self, start_datetime, intent_note, outcome_note, outcome_blocked):
-        super()._work_item_close(start_datetime, intent_note, outcome_note, outcome_blocked)
-        if outcome_blocked:
-            self.blocked = True

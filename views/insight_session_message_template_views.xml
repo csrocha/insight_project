@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<odoo>
-    <menuitem id="menu_insight_session_message_template"
-              name="Mensajes de inicio/cierre de tarea"
-              parent="project.menu_project_config"
-              action="work_item_systray.action_work_item_message_template"
-              groups="project.group_project_manager"
-              sequence="110"/>
-</odoo>

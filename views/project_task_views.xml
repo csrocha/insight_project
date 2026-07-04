@@ -5,11 +5,6 @@
         <field name="model">project.task</field>
         <field name="inherit_id" ref="project.view_task_form2"/>
         <field name="arch" type="xml">
-            <xpath expr="//header" position="inside">
-                <button name="action_switch_to_session" type="object"
-                        string="▶ Activar tarea" class="btn-primary"
-                        invisible="state in ('1_done', '1_canceled')"/>
-            </xpath>
             <xpath expr="//field[@name='tag_ids']" position="after">
                 <field name="is_milestone"/>
                 <field name="tj_dependency_type"
@@ -28,34 +23,6 @@
                         </group>
                     </group>
                 </page>
-            </xpath>
-        </field>
-    </record>
-
-    <record id="view_task_kanban_inherit_insight" model="ir.ui.view">
-        <field name="name">project.task.kanban.inherit.insight_project</field>
-        <field name="model">project.task</field>
-        <field name="inherit_id" ref="project.view_task_kanban"/>
-        <field name="arch" type="xml">
-            <xpath expr="//div[hasclass('oe_kanban_bottom_left')]" position="inside">
-                <button name="action_switch_to_session" type="object"
-                        class="btn-link p-0 ms-1" title="Activar esta tarea"
-                        invisible="state in ('1_done', '1_canceled')">
-                    <i class="fa fa-play-circle"/>
-                </button>
-            </xpath>
-        </field>
-    </record>
-
-    <record id="project_task_view_tree_inherit_insight" model="ir.ui.view">
-        <field name="name">project.task.tree.main.base.inherit.insight_project</field>
-        <field name="model">project.task</field>
-        <field name="inherit_id" ref="project.project_task_view_tree_main_base"/>
-        <field name="arch" type="xml">
-            <xpath expr="//field[@name='priority']" position="after">
-                <button name="action_switch_to_session" type="object"
-                        icon="fa-play-circle" title="Activar esta tarea"
-                        invisible="state in ('1_done', '1_canceled')"/>
             </xpath>
         </field>
     </record>
