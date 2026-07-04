@@ -5,7 +5,12 @@ from odoo import models, fields, api
 class ProjectTask(models.Model):
     _inherit = 'project.task'
 
-    is_milestone = fields.Boolean(string='Hito')
+    # blocked / is_critical_path / is_milestone viven en project_improve
+    # (genéricos, sin motor de scheduling); acá solo se le agrega el
+    # cómputo de is_critical_path a partir del schedule TJ3.
+    is_critical_path = fields.Boolean(
+        string='Camino crítico', compute='_compute_scheduled', store=True,
+    )
     tj_dependency_type = fields.Selection(
         [('FS', 'Finish→Start'), ('SS', 'Start→Start'), ('FF', 'Finish→Finish')],
         string='Tipo de dependencia TJ',
@@ -17,18 +22,8 @@ class ProjectTask(models.Model):
     end_scheduled = fields.Datetime(
         string='Fin planificado', compute='_compute_scheduled', store=True,
     )
-    is_critical_path = fields.Boolean(
-        string='Camino crítico', compute='_compute_scheduled', store=True,
-    )
     bsi = fields.Char(
         string='BSI', compute='_compute_scheduled', store=True,
-    )
-    blocked = fields.Boolean(
-        string='Bloqueada', tracking=True,
-        help='Impedimento temporal que impide continuar el trabajo. No '
-             'reemplaza stage_id ni state: puede coexistir con cualquier '
-             'etapa/estado activo. El motivo se registra como comentario '
-             'en el chatter o en el parte de horas, no en este campo.',
     )
 
     @api.depends('project_id.scenario_ids', 'project_id.scenario_ids.schedule_ids')

@@ -9,6 +9,62 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.0.0] - 2026-07-04
+
+### Prompt
+
+Continuación de la sesión de 17.0.8.0.0, al terminar de armar
+`work_item_task_tj3` (el glue module con `insight_project`):
+
+> "Ya se porque me hace tanto ruido work_item_task_tj3. insight_project
+> Implementa blocked y decoración de camino critico y si no usamos
+> insight_project esas funcionalidades no tienen sentido en
+> work_item_task. Para mi hay que sacar blocked y camino critico de
+> insight_project y trasladarlo a un módulo más básico (project_improve)
+> porque no es algo exclusivo de tj3."
+
+### Discusión de diseño
+
+- **`blocked`, `is_critical_path` e `is_milestone` no son conceptos
+  exclusivos de TaskJuggler** — son vocabulario genérico de gestión de
+  tareas. Vivían en `insight_project` solo por herencia histórica (ahí
+  nació el systray, antes del split en varios addons). Se mudan al nuevo
+  addon base `project_improve` (depende solo de `project`).
+- **`is_milestone` también se mueve**, con una razón concreta más allá de
+  "es genérico": permite marcar tareas de duración cero pensadas para
+  disparar comunicaciones a usuarios/clientes ("etapa terminada",
+  "documento listo") desde addons futuros que no tengan por qué depender
+  de TaskJuggler. `insight_project` se enfoca en optimización de tareas y
+  asignación de recursos, no en esto.
+- **`is_critical_path` sigue necesitando el cómputo de `insight_project`**:
+  `project_improve` lo declara como campo plano (sin `compute`, queda en
+  `False` sin un motor de scheduling); acá se le agrega
+  `compute='_compute_scheduled', store=True` encima, igual que antes.
+- **Esto vuelve innecesario `work_item_task_tj3`** (el glue module creado
+  en la sesión anterior): al ser campos compartidos (lectura), no hay
+  ningún método sobreescrito en común entre `insight_project` y
+  `work_item_task` que necesite un glue module para resolver el orden de
+  carga — cada uno depende de `project_improve` de forma independiente y
+  listo. Se repositorio queda en GitHub sin uso; no se borró.
+- **Se descubrió de paso que `state`/`02_changes_requested` (usado para el
+  ❗ "revisión pendiente") es nativo de `project`**, no algo que
+  `insight_project` haya definido — solo lo usa su cron. Esto simplifica
+  aún más: `work_item_task` puede decorar con ❗ sin depender de nada
+  extra.
+
+### Quitado
+
+- Campos `blocked`, `is_milestone` de `models/project_task.py`: migrados a
+  `project_improve`.
+- `is_critical_path` deja de declararse desde cero: ahora extiende (con
+  `compute`) el campo plano que ya declaró `project_improve`.
+
+### Cambiado
+
+- `depends`: se agrega `project_improve`.
+
+---
+
 ## [17.0.8.0.0] - 2026-07-04
 
 ### Prompt
