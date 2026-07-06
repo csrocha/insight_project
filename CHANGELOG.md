@@ -9,6 +9,52 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.1.0] - 2026-07-06
+
+### Prompt
+
+> "En el mensaje que sale cuando el horizonte de planificación queda corto
+> me gustaría que cambie el título de "Invalid Operation" a "Operation
+> requires attention". Y que tenga dos botones: "Extender horizonte de
+> planificación", "Modificar proyecto". El primero solo modifica el
+> horizonte de planificación al valor recomendado, y el segundo no hace
+> cambios. Importante, tiene que haber un mensaje en el chatter con ese
+> mismo mensaje siempre. El mensaje en una ventana solo aparece en modo
+> interactivo."
+
+### Discusión de diseño
+
+- Un `UserError` no permite personalizar título ni agregar botones — se
+  reemplaza por un wizard (`insight.unscheduled.tasks.wizard`) abierto
+  como `ir.actions.act_window` con `target=new`, cuyo `name` de acción es
+  el título del diálogo ("La operación requiere atención").
+- **El mensaje al chatter se sigue posteando siempre, sin importar el modo**
+  (`_call_tj_microservice` no cambió en ese aspecto). Lo único condicionado
+  por `interactive` es si además se abre el wizard o se deja propagar como
+  `UserError` plano (para llamadores no interactivos, ej. futuros crons).
+- Para no romper el contrato existente ("`_call_tj_microservice` lanza
+  `UserError` para el caso de tareas sin agendar", ya cubierto por
+  `tests/test_scheduler.py`, todavía sin commitear — hay otra sesión
+  escribiendo tests unitarios en paralelo), se introduce
+  `UnscheduledTasksError(UserError)`: sigue siendo un `UserError` para
+  quien llame a `_call_tj_microservice` directamente, pero
+  `action_run_schedule` la distingue por tipo para decidir si mostrar el
+  wizard.
+- Botón "Extender horizonte de planificación" solo visible si hay una
+  estimación calculable (`_tjp_suggest_horizon`); "Modificar proyecto" no
+  aplica ningún cambio, solo cierra el wizard.
+- Verificado el comportamiento (chatter + tipo de excepción) directo por
+  shell de Odoo, sin pasar por la suite de tests en paralelo.
+
+### Agregado
+
+- `models/insight_unscheduled_tasks_wizard.py`,
+  `views/insight_unscheduled_tasks_wizard_views.xml`:
+  `insight.unscheduled.tasks.wizard`.
+- `action_run_schedule(interactive=True)`: nuevo parámetro.
+
+---
+
 ## [17.0.9.0.2] - 2026-07-04
 
 ### Prompt

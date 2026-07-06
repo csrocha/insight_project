@@ -12,6 +12,19 @@ from odoo import _, fields, models
 from odoo.exceptions import UserError
 
 
+class UnscheduledTasksError(UserError):
+    """El microservicio TJ3 respondió que algunas tareas no entran en el
+    horizonte de planificación actual. Es un UserError (quien llame a
+    _call_tj_microservice directamente sigue viendo un UserError normal);
+    action_run_schedule además la distingue por tipo para decidir si
+    mostrar el wizard interactivo o dejarla propagar tal cual."""
+
+    def __init__(self, n_unscheduled, message):
+        self.n_unscheduled = n_unscheduled
+        self.message = message
+        super().__init__(message)
+
+
 def _tz_get(self):
     return [(x, x) for x in sorted(pytz.all_timezones)]
 
@@ -64,7 +77,7 @@ class ProjectProject(models.Model):
             'target': 'self',
         }
 
-    def action_run_schedule(self):
+    def action_run_schedule(self, interactive=True):
         self.ensure_one()
         if not self.is_tj_enabled:
             raise UserError(_('La integración TaskJuggler no está habilitada para este proyecto.'))
@@ -81,7 +94,16 @@ class ProjectProject(models.Model):
             timeout = 120
 
         tjp_content = self._generate_tjp()
-        response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
+        try:
+            response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
+        except UnscheduledTasksError as exc:
+            # El chatter ya tiene el mensaje (se postea siempre, sin importar
+            # el modo); la ventana con los dos botones es solo para uso
+            # interactivo — un llamador no interactivo (cron, RPC) recibe el
+            # UserError de siempre.
+            if interactive:
+                return self._action_unscheduled_tasks_wizard(exc.message)
+            raise UserError(exc.message) from exc
 
         imported = self._import_all_schedules(response_data.get('csv_files', {}))
         self.write({
@@ -97,6 +119,23 @@ class ProjectProject(models.Model):
                 'type': 'success',
                 'sticky': False,
             },
+        }
+
+    def _action_unscheduled_tasks_wizard(self, message):
+        self.ensure_one()
+        suggested = self._tjp_suggest_horizon(self.tj_now or fields.Date.today())
+        wizard = self.env['insight.unscheduled.tasks.wizard'].create({
+            'project_id': self.id,
+            'message': message,
+            'suggested_horizon': suggested,
+        })
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('La operación requiere atención'),
+            'res_model': 'insight.unscheduled.tasks.wizard',
+            'res_id': wizard.id,
+            'view_mode': 'form',
+            'target': 'new',
         }
 
     def _call_tj_microservice(self, base_url, tjp_content, timeout, include_files=None):
@@ -128,9 +167,10 @@ class ProjectProject(models.Model):
                 pass
             unscheduled = self._TJ_UNSCHEDULED_RE.search(detail)
             if unscheduled and self.id:
-                message = self._tj_unscheduled_message(int(unscheduled.group(1)))
+                n_unscheduled = int(unscheduled.group(1))
+                message = self._tj_unscheduled_message(n_unscheduled)
                 self.message_post(body=message.replace('\n', '<br/>'))
-                raise UserError(message)
+                raise UnscheduledTasksError(n_unscheduled, message)
             raise UserError(_('Error del microservicio TJ3: %s\n%s') % (str(e), detail))
 
     _TJ_UNSCHEDULED_RE = re.compile(r'(\d+)\s+tasks? could not be scheduled')
