@@ -9,6 +9,78 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.1.1] - 2026-07-06
+
+### Prompt
+
+> "Para project_insight necesitamos tests unitarios para la importación y
+> exportación de TJP, para la ejecución del Scheduler, y para generar el
+> Gantt. Dejo un archivo para usar como test. Nota, la llamada a tj3 debe
+> estar mockeada. La idea es fijar estas funcionalidades para no perderlas
+> en el futuro y asegurar que la interface se mantiene. Y asegurar un
+> espacio donde probar errores de interface y más."
+>
+> Luego, al notar en paralelo el agregado de `UnscheduledTasksError`:
+> "Notar que empezaste a armar los tests se agregó una nueva excepción:
+> UnscheduledTasksError, por favor, no pierdas esa funcionalidad y agregala
+> a los tests si tiene sentido."
+
+### Discusión de diseño
+
+- Se usó un `.tjp` real exportado por el usuario (`IT_plan.tjp`, proyecto
+  interno) solo como **referencia** para diseñar los fixtures — no se
+  commiteó el archivo ni su contenido, para no dejar el roadmap interno
+  real en el repo. Los fixtures sintéticos reproducen sus casos límite más
+  representativos: tareas hoja sin esfuerzo/hijos (renderizan como bloque
+  `{ }` vacío, usadas como hitos/resúmenes), `allocate` con múltiples
+  recursos en una tarea, un recurso sin `hr.employee` vinculado (bloque de
+  recurso vacío), y un escenario raíz con alternativas anidadas.
+- `_generate_tjp`/`_tj_project_users` dependen de `project.task.user_ids`
+  del proyecto completo (no solo de la tarea bajo test); toda tarea creada
+  sin asignar explícitamente `user_ids: [(6, 0, [])]` termina con un
+  asignado por defecto y puede disparar `UserError` de recurso huérfano en
+  tests que no lo esperaban — hay que limpiarlo explícitamente.
+- `_sync_gantt_dates` escribe `date_deadline` vía `write()`, que en esta
+  instalación pasa por el `write()` de `project_enterprise` (no es
+  dependencia de `insight_project`, pero está instalado en la misma BD):
+  ese código "ajusta" la fecha al calendario laboral del proyecto/empresa,
+  así que el test no puede esperar igualdad exacta con la fecha del CSV —
+  se usa una tolerancia de ±3 días.
+- Hallazgo de testing en Odoo: `TransactionCase.assertRaises()` envuelve su
+  bloque en un savepoint y hace rollback al capturar la excepción esperada,
+  lo que **descarta también los efectos de DB previos al raise** (ej. el
+  `message_post` del chatter en `_call_tj_microservice` antes de lanzar
+  `UnscheduledTasksError`). El test que verifica ese mensaje usa
+  `try/except` plano en su lugar; queda documentado inline para no
+  repetir la investigación.
+- `UnscheduledTasksError` (agregada en paralelo en 17.0.9.1.0) quedó
+  cubierta: tipo específico + atributo `n_unscheduled` + mensaje posteado
+  al chatter desde `_call_tj_microservice`, y la bifurcación de
+  `action_run_schedule(interactive=...)` (wizard vs. `UserError` plano)
+  más las dos acciones del wizard (`action_extend_horizon`,
+  `action_modify_project`).
+- Suite corrida contra Odoo real en el contenedor Docker del proyecto
+  (`odoo-test`, DB `fop`) — 77 tests, todos en verde.
+
+### Agregado
+
+- `tests/test_tjp_export.py`: generación del `.tjp` (header, escenarios
+  anidados, bloques de recurso con calendario/leaves, jerarquía de tareas,
+  `allocate` multi-recurso, dependencias, taskreports) y
+  `action_export_tjp`; incluye el caso de error de interfaz "recurso TJ3
+  sin usuario Odoo asociado".
+- `tests/test_tjp_schedule_import.py`: parseo del CSV que devuelve tj3
+  (`_import_scenario_csv`, `_import_all_schedules`, `_sync_gantt_dates`) y
+  los helpers de parseo de fecha/duración/criticidad.
+- `tests/test_scheduler.py`: `action_run_schedule` con el microservicio
+  tj3 siempre mockeado — guards, contrato HTTP de
+  `_call_tj_microservice`, y todo el flujo de `UnscheduledTasksError`.
+- `tests/test_gantt.py`: `_render_gantt_svg` (placeholder vacío,
+  etiquetas, leyenda de escenarios, marcador de camino crítico, marcador
+  "Hoy") y el guard de `action_view_gantt`.
+
+---
+
 ## [17.0.9.1.0] - 2026-07-06
 
 ### Prompt
