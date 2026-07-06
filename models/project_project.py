@@ -323,7 +323,10 @@ class ProjectProject(models.Model):
         for leave in leaves:
             d_from = leave.date_from.date()
             d_to = leave.date_to.date()
-            lines.append(f'  leaves vacation {d_from} - {d_to}')
+            # TJ3 solo acepta estos tipos de leaves: annual, special, sick,
+            # unpaid, holiday, unemployed. 'vacation' no es un token válido
+            # de la sintaxis — 'annual' es el equivalente correcto.
+            lines.append(f'  leaves annual {d_from} - {d_to}')
 
         return lines
 

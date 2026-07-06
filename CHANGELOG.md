@@ -9,6 +9,30 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.0.2] - 2026-07-04
+
+### Prompt
+
+Siguiente error al ejecutar el schedule tras el fix de fechas:
+
+> "Error del microservicio TJ3: 422 [...] project.tjp:28: Error:
+> Unexpected token 'vacation' found. Expecting one of 'project', 'annual',
+> 'special', 'sick', 'unpaid', 'holiday', 'unemployed' / leaves vacation"
+
+### Discusión de diseño
+
+- Otro bug preexistente sin relación con las sesiones anteriores:
+  `_tjp_hr_schedule` generaba `leaves vacation ...`, pero `vacation` no es
+  un token válido de la sintaxis TJ3 — los tipos válidos son `annual`,
+  `special`, `sick`, `unpaid`, `holiday`, `unemployed`. `annual` es el
+  equivalente correcto para licencias/vacaciones validadas de `hr.leave`.
+
+### Arreglado
+
+- `_tjp_hr_schedule`: `leaves vacation` → `leaves annual`.
+
+---
+
 ## [17.0.9.0.1] - 2026-07-04
 
 ### Prompt
