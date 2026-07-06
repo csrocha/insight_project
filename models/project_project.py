@@ -264,8 +264,11 @@ class ProjectProject(models.Model):
             return self.tj_end_date
         latest = None
         for task in self.task_ids:
-            if task.date_deadline and (latest is None or task.date_deadline > latest):
-                latest = task.date_deadline
+            # date_deadline es Datetime (nativo de project); start/tj_end_date
+            # son Date — hay que normalizar antes de comparar.
+            deadline = task.date_deadline.date() if task.date_deadline else False
+            if deadline and (latest is None or deadline > latest):
+                latest = deadline
         if latest and latest > start:
             buffer = max((latest - start).days // 3, 30)
             return latest + timedelta(days=buffer)

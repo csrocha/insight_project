@@ -9,6 +9,31 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.0.1] - 2026-07-04
+
+### Prompt
+
+Primer schedule real ejecutado end-to-end tras importar un TJP:
+
+> "Pude importar un tjp. Cuando quise ejecutar un scheduler falló con: [...]
+> TypeError: can't compare datetime.datetime to datetime.date"
+
+### Discusión de diseño
+
+- Bug preexistente, sin relación con los cambios de sesiones anteriores:
+  `_tjp_project_end_date` comparaba `task.date_deadline` (campo
+  `Datetime` nativo de `project`) contra `start`/`tj_end_date` (campos
+  `Date`). Nunca se había disparado porque hacía falta una tarea con
+  `date_deadline` real combinada con un intento de schedule — el primer
+  TJP importado con deadlines fue lo que lo expuso.
+
+### Arreglado
+
+- `_tjp_project_end_date`: normaliza `task.date_deadline` a `.date()`
+  antes de comparar/guardar como `latest`.
+
+---
+
 ## [17.0.9.0.0] - 2026-07-04
 
 ### Prompt
