@@ -9,6 +9,101 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.1.2] - 2026-07-06
+
+### Prompt
+
+> "Estoy viendo un comportamiento no deseado de insight_project. No estamos
+> aprovechando a TaskJuggler para asignar la persona óptima a cada tarea,
+> sino que el resultado son todas los recursos disponible. Entonces, cuando
+> se exporta en tjp hay que dejar disponible todos los recursos
+> potenciales, y cuando taskjuggler quede asignado uno (o varios, segun
+> conf) ese tiene que ser la persona asignada. Lo que no tenemos son las
+> personas que pueden ser elegidas para esa tarea en el lugar de las
+> personas asignadas [...] deberían tener una lista de personas disponibles
+> para atender esas tareas y usar esa lista para enviar al taskjuggler."
+>
+> Sobre dónde debía reflejarse la asignación real que devuelve TJ3: "No
+> cambiar la semántica de project.task.user_ids sino agregar un nuevo
+> campo, que puede ser computado usando los skills, que tenga el pool de
+> empleados que puede ser asignado (project.task.resource_pool_ids?)" — y,
+> aun así, "Se escribe en project.task.user_ids" una vez corrido el
+> schedule.
+>
+> Sobre el criterio de selección de TJ3: "Agrega un campo a project donde
+> podamos seleccionar el criterio de asignación."
+>
+> Sobre dónde debía vivir la lógica de skills/pool: "Deberíamos pasar todo
+> lo de skills que no es propio de tj3 en project_improve."
+
+### Discusión de diseño
+
+- El bug de fondo no era que se declararan "todos los recursos del
+  sistema" como candidatos — `_tjp_allocate` ya estaba escribiendo solo
+  los `user_ids` de la tarea — sino que, con más de un asignado, emitía
+  una lista plana `allocate u1, u2, u3`. En sintaxis TJ3 eso significa
+  "los tres trabajan la tarea en simultáneo", no "elegí uno de estos
+  tres": TaskJuggler nunca llegaba a optimizar nada. Esto estaba incluso
+  fijado como comportamiento "intencional" en
+  `test_leaf_task_with_multiple_resources_allocates_all`.
+- El pool de candidatos por skills y la restricción por roster del
+  proyecto (`project.candidate_user_ids`) no son un concepto de
+  TaskJuggler — son staffing genérico, útil incluso sin TJ3 — así que
+  `required_skill_ids`/`resource_pool_ids` (en `project.task`) y
+  `candidate_user_ids` (en `project.project`) se agregaron en
+  `project_improve`, no acá. `insight_project` solo consume
+  `task.resource_pool_ids` al generar el `.tjp` y agrega lo específico de
+  TJ3: el criterio `select` configurable (`tj_allocation_selection`) y el
+  round-trip de la asignación real.
+- Para que TJ3 elija un solo recurso entre varios candidatos hace falta la
+  sintaxis `allocate primario { alternative candidato2, candidato3;
+  select <criterio> }`, no una lista plana — de ahí la reescritura de
+  `_tjp_allocate`. `_tj_project_users()` también pasó a declarar el pool
+  efectivo de cada tarea (`resource_pool_ids or user_ids`), porque un
+  candidato que no esté en `user_ids` igual necesita su propio bloque
+  `resource` en el `.tjp`.
+- El `taskreport` ya pedía la columna `resources` en el CSV pero se
+  ignoraba al importar — quedaba la mitad del round-trip sin cerrar. Se
+  agregó `resource_ids` a `insight.task.schedule`, se parsea esa columna
+  en `_import_scenario_csv`, y `_sync_gantt_dates` la vuelca a
+  `task.user_ids` — pero **solo** para el escenario baseline (mismo
+  alcance que ya tenía esa función para fechas), para no pisar
+  `user_ids` con el resultado de un escenario alternativo.
+- Al testear el guard de "no tocar `user_ids` en escenarios no-baseline"
+  apareció que `project.task.user_ids` no arranca vacío por defecto (hay
+  un asignado por defecto preexistente, no relacionado a este cambio) —
+  el test se ajustó para comparar contra el valor previo en vez de asumir
+  `False`.
+- Suite corrida contra Odoo real en el contenedor Docker del proyecto
+  (`odoo-test`, DB `fop`) — 83 tests en `insight_project` (+ 6 nuevos en
+  `project_improve`), todos en verde.
+
+### Cambiado
+
+- `_tjp_allocate(task)`: usa `task.resource_pool_ids or task.user_ids`
+  como pool de candidatos y emite un bloque `allocate primario {
+  alternative ...; select ... }` en vez de una lista plana cuando hay más
+  de un candidato.
+- `_tj_project_users()`: declara el pool efectivo de cada tarea
+  (`resource_pool_ids or user_ids`), no solo `user_ids`.
+- `_sync_gantt_dates()`: además de `date_deadline`/`planned_date_begin`,
+  ahora también escribe `task.user_ids` a partir de `resource_ids` del
+  schedule baseline.
+
+### Agregado
+
+- `project.project.tj_allocation_selection`: criterio configurable
+  (`minallocated`, `minloaded`, `maxloaded`, `mincost`, `order`,
+  `random`) para el atributo `select` de TJ3.
+- `insight.task.schedule.resource_ids`: recurso(s) que TJ3 realmente
+  asignó a la tarea en cada escenario, parseado desde la columna
+  `resources` del `taskreport`.
+- Vistas: criterio de selección y `candidate_user_ids` en la pestaña
+  TaskJuggler del proyecto; `required_skill_ids`/`resource_pool_ids` en
+  la pestaña Schedule de la tarea (campos definidos en `project_improve`).
+
+---
+
 ## [17.0.9.1.1] - 2026-07-06
 
 ### Prompt

@@ -54,6 +54,20 @@ class ProjectProject(models.Model):
     scenario_ids = fields.One2many('insight.scenario', 'project_id', string='Escenarios')
     schedule_dirty = fields.Boolean(string='Schedule desactualizado')
     last_scheduled = fields.Datetime(string='Último schedule', readonly=True)
+    tj_allocation_selection = fields.Selection(
+        [
+            ('minallocated', 'Menor carga asignada'),
+            ('minloaded', 'Menor carga relativa'),
+            ('maxloaded', 'Mayor carga relativa'),
+            ('mincost', 'Menor costo'),
+            ('order', 'Orden de la lista'),
+            ('random', 'Aleatorio'),
+        ],
+        string='Criterio de selección TJ3', default='minallocated',
+        help='Criterio que usa TaskJuggler (atributo "select" de un bloque '
+             'allocate) para elegir un recurso entre el candidato principal '
+             'y sus alternativas cuando una tarea tiene más de un candidato.',
+    )
 
     # ── Public actions ────────────────────────────────────────────────────────
 
@@ -319,13 +333,14 @@ class ProjectProject(models.Model):
             return start + timedelta(days=730)
 
     def _tj_project_users(self):
-        """res.users deduplicado a partir de todas las asignaciones de tarea del
-        proyecto. Cualquier usuario asignado a una tarea es automáticamente un
-        recurso TJ3, sin paso de registro previo."""
+        """res.users deduplicado a partir del pool de candidatos efectivo de
+        cada tarea del proyecto (resource_pool_ids si está definido, si no
+        user_ids). Cualquier candidato potencial de una tarea necesita su
+        propio bloque `resource`, no solo quien termine asignado."""
         self.ensure_one()
         users = self.env['res.users']
         for task in self.task_ids:
-            users |= task.user_ids
+            users |= task.resource_pool_ids or task.user_ids
         return users
 
     def _tjp_resource_block(self, user):
@@ -447,10 +462,24 @@ class ProjectProject(models.Model):
         return lines
 
     def _tjp_allocate(self, task):
-        if not task.user_ids:
+        """Emite el pool de candidatos de la tarea (resource_pool_ids si está
+        definido, si no user_ids) como un bloque `allocate primary { alternative
+        ...; select ... }`, para que TJ3 elija a una sola persona del pool en
+        vez de asignarlas todas en simultáneo."""
+        pool = task.resource_pool_ids or task.user_ids
+        if not pool:
             return []
-        ids = [self._tjp_resource_id(u.partner_id.id) for u in task.user_ids]
-        return [f'allocate {", ".join(ids)}']
+        ids = [self._tjp_resource_id(u.partner_id.id) for u in pool]
+        primary, *alternatives = ids
+        if not alternatives:
+            return [f'allocate {primary}']
+        selection = task.project_id.tj_allocation_selection or 'minallocated'
+        return [
+            f'allocate {primary} {{',
+            f'  alternative {", ".join(alternatives)}',
+            f'  select {selection}',
+            '}',
+        ]
 
     def _tjp_reports(self, scenarios=None):
         """One taskreport per scenario so each CSV file maps to exactly one scenario."""
@@ -557,6 +586,8 @@ class ProjectProject(models.Model):
             vals = {'date_deadline': schedule.end_scheduled}
             if has_planned_date_begin:
                 vals['planned_date_begin'] = schedule.start_scheduled
+            if schedule.resource_ids:
+                vals['user_ids'] = [(6, 0, schedule.resource_ids.ids)]
             schedule.task_id.write(vals)
 
     def _import_scenario_csv(self, csv_content, scenario):
@@ -590,6 +621,7 @@ class ProjectProject(models.Model):
                 'duration_days': self._parse_tj_duration(norm.get('duration', '')),
                 'is_critical_path': self._parse_tj_criticalness(norm.get('criticalness', '')),
                 'bsi': norm.get('bsi', ''),
+                'resource_ids': [(6, 0, self._parse_tj_resource_ids(norm.get('resources', '')))],
             })
         if vals_list:
             Schedule.create(vals_list)
@@ -648,6 +680,23 @@ class ProjectProject(models.Model):
             return float(value or '0') > 0.0
         except (ValueError, TypeError):
             return False
+
+    @staticmethod
+    def _parse_tj_resource_ids(value):
+        """Parse the taskreport 'resources' column (e.g. 'u12, u34') into
+        Odoo res.users ids — the inverse of _tjp_resource_id's 'u{user.id}'."""
+        if not value:
+            return []
+        ids = []
+        for token in value.split(','):
+            token = token.strip()
+            if token.startswith('u'):
+                token = token[1:]
+            try:
+                ids.append(int(token))
+            except ValueError:
+                continue
+        return ids
 
     # ── Gantt SVG renderer ────────────────────────────────────────────────────
 

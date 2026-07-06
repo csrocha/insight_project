@@ -52,6 +52,12 @@ class TestTjCsvParsingHelpers(TransactionCase):
         self.assertFalse(ProjectProject._parse_tj_datetime('', 'UTC'))
         self.assertFalse(ProjectProject._parse_tj_datetime('not-a-date', 'UTC'))
 
+    def test_parse_tj_resource_ids(self):
+        self.assertEqual(ProjectProject._parse_tj_resource_ids('u12'), [12])
+        self.assertEqual(ProjectProject._parse_tj_resource_ids('u12, u34'), [12, 34])
+        self.assertEqual(ProjectProject._parse_tj_resource_ids(''), [])
+        self.assertEqual(ProjectProject._parse_tj_resource_ids('bogus'), [])
+
 
 class TestImportScenarioCsv(TransactionCase):
 
@@ -67,12 +73,16 @@ class TestImportScenarioCsv(TransactionCase):
         })
         cls.task1 = cls.env['project.task'].create({'name': 'Task 1', 'project_id': cls.project.id})
         cls.task2 = cls.env['project.task'].create({'name': 'Task 2', 'project_id': cls.project.id})
+        cls.user = cls.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'CSV Resource', 'login': 'csv_resource@insight.test', 'email': 'csv_resource@insight.test',
+            'groups_id': [(4, cls.env.ref('base.group_user').id)],
+        })
 
     @staticmethod
-    def _csv(task_id, bsi='1', start='2024-01-01', end='2024-01-10', effort='5.0d', duration='5.0d', crit='0'):
+    def _csv(task_id, bsi='1', start='2024-01-01', end='2024-01-10', effort='5.0d', duration='5.0d', crit='0', resources=''):
         return (
             '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness"\n'
-            f'"t{task_id}";"{bsi}";"Task";"{start}";"{end}";"{effort}";"{duration}";"";"{crit}"\n'
+            f'"t{task_id}";"{bsi}";"Task";"{start}";"{end}";"{effort}";"{duration}";"{resources}";"{crit}"\n'
         )
 
     def test_creates_schedule_record_from_csv_row(self):
@@ -105,6 +115,13 @@ class TestImportScenarioCsv(TransactionCase):
         self.project._import_scenario_csv(self._csv(self.task1.id, crit='55'), self.scenario)
         schedule = self.env['insight.task.schedule'].search([('task_id', '=', self.task1.id)])
         self.assertTrue(schedule.is_critical_path)
+
+    def test_parses_resources_column_into_resource_ids(self):
+        self.project._import_scenario_csv(
+            self._csv(self.task1.id, resources=f'u{self.user.id}'), self.scenario,
+        )
+        schedule = self.env['insight.task.schedule'].search([('task_id', '=', self.task1.id)])
+        self.assertEqual(schedule.resource_ids, self.user)
 
     def test_comma_delimited_csv_also_parses(self):
         csv_content = (
@@ -173,11 +190,15 @@ class TestSyncGanttDates(TransactionCase):
             'name': 'Noai', 'project_id': cls.project.id, 'is_baseline': False,
         })
         cls.task = cls.env['project.task'].create({'name': 'Synced Task', 'project_id': cls.project.id})
+        cls.assignee = cls.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Sync Resource', 'login': 'sync_resource@insight.test', 'email': 'sync_resource@insight.test',
+            'groups_id': [(4, cls.env.ref('base.group_user').id)],
+        })
 
-    def _csv_for(self, task, end):
+    def _csv_for(self, task, end, resources=''):
         return (
             '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness"\n'
-            f'"t{task.id}";"1";"Task";"2024-01-01";"{end}";"5.0d";"5.0d";"";"0"\n'
+            f'"t{task.id}";"1";"Task";"2024-01-01";"{end}";"5.0d";"5.0d";"{resources}";"0"\n'
         )
 
     def test_pushes_baseline_end_date_into_task_deadline(self):
@@ -195,6 +216,22 @@ class TestSyncGanttDates(TransactionCase):
         self.project._import_scenario_csv(self._csv_for(self.task, '2099-01-01'), self.alternate)
         self.project._sync_gantt_dates()
         self.assertFalse(self.task.date_deadline)
+
+    def test_pushes_baseline_resources_into_task_user_ids(self):
+        self.project._import_scenario_csv(
+            self._csv_for(self.task, '2024-02-20', resources=f'u{self.assignee.id}'), self.baseline,
+        )
+        self.project._sync_gantt_dates()
+        self.assertEqual(self.task.user_ids, self.assignee)
+
+    def test_non_baseline_resources_do_not_touch_task_user_ids(self):
+        before = self.task.user_ids
+        self.project._import_scenario_csv(
+            self._csv_for(self.task, '2099-01-01', resources=f'u{self.assignee.id}'), self.alternate,
+        )
+        self.project._sync_gantt_dates()
+        self.assertEqual(self.task.user_ids, before)
+        self.assertNotIn(self.assignee, self.task.user_ids)
 
     def test_noop_without_any_baseline_scenario(self):
         project = self.env['project.project'].create({'name': 'No Baseline Project', 'is_tj_enabled': True})

@@ -190,7 +190,10 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn('  effort 5.00d', text)
         self.assertIn(f'  allocate u{self.u1.id}', text)
 
-    def test_leaf_task_with_multiple_resources_allocates_all(self):
+    def test_leaf_task_with_multiple_resources_uses_alternative_block(self):
+        """Con más de un candidato, TJ3 debe elegir uno solo: se emite un
+        bloque `allocate primary { alternative ...; select ... }` en vez de
+        una lista plana que TJ3 interpretaría como 'todos en simultáneo'."""
         task = self._task(
             name='Validación cruzada',
             allocated_hours=80.0,
@@ -198,9 +201,35 @@ class TestTjpTaskBlock(TransactionCase):
         )
         lines = self.project._tjp_task_block(task)
         text = '\n'.join(lines)
-        allocate_line = next(l for l in lines if l.strip().startswith('allocate '))
-        allocated_ids = {tok.strip() for tok in allocate_line.split('allocate')[1].split(',')}
-        self.assertEqual(allocated_ids, {f'u{u.id}' for u in self.users})
+        self.assertIn(f'  allocate u{self.u1.id} {{', text)
+        self.assertIn(f'    alternative u{self.u2.id}, u{self.u3.id}', text)
+        self.assertIn('    select minallocated', text)
+
+    def test_allocate_respects_project_selection_criterion(self):
+        self.project.tj_allocation_selection = 'order'
+        task = self._task(
+            name='Orden explícito',
+            allocated_hours=40.0,
+            user_ids=[(6, 0, [self.u1.id, self.u2.id])],
+        )
+        lines = self.project._tjp_task_block(task)
+        self.assertIn('    select order', '\n'.join(lines))
+        self.project.tj_allocation_selection = 'minallocated'
+
+    def test_resource_pool_ids_overrides_user_ids_for_allocation(self):
+        """resource_pool_ids (el pool de candidatos, potencialmente derivado
+        de skills en project_improve) manda sobre user_ids al exportar."""
+        task = self._task(
+            name='Pool explícito',
+            allocated_hours=40.0,
+            user_ids=[(6, 0, [self.u1.id])],
+        )
+        task.resource_pool_ids = [(6, 0, [self.u2.id, self.u3.id])]
+        lines = self.project._tjp_task_block(task)
+        text = '\n'.join(lines)
+        self.assertNotIn(f'u{self.u1.id}', text)
+        self.assertIn(f'  allocate u{self.u2.id} {{', text)
+        self.assertIn(f'    alternative u{self.u3.id}', text)
 
     def test_leaf_task_without_resources_uses_duration(self):
         task = self._task(name='No resource leaf', allocated_hours=16.0, user_ids=[(6, 0, [])])

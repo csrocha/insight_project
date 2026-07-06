@@ -15,3 +15,9 @@ class InsightTaskSchedule(models.Model):
     duration_days = fields.Float()
     is_critical_path = fields.Boolean()
     bsi = fields.Char()
+    resource_ids = fields.Many2many(
+        'res.users', string='Recursos asignados',
+        help='Recurso(s) que TJ3 realmente asignó a la tarea en este '
+             'escenario tras resolver el pool de candidatos (columna '
+             '"resources" del taskreport).',
+    )
