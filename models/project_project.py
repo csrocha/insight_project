@@ -38,19 +38,12 @@ _DOW_TJ = {
 class ProjectProject(models.Model):
     _inherit = 'project.project'
 
-    tj_now = fields.Date(string='Fecha base del plan')
     tj_timezone = fields.Selection(
         _tz_get,
         string='Zona horaria TJ',
         default='America/Argentina/Buenos_Aires',
     )
     is_tj_enabled = fields.Boolean(string='Habilitar integración TaskJuggler')
-    tj_end_date = fields.Date(
-        string='Horizonte de planificación',
-        help='Fecha límite para el scheduling en TaskJuggler. Si se deja vacío, '
-             'se calcula a partir del deadline más lejano de las tareas o, en su '
-             'defecto, 2 años desde la fecha base del plan.',
-    )
     scenario_ids = fields.One2many('insight.scenario', 'project_id', string='Escenarios')
     schedule_dirty = fields.Boolean(string='Schedule desactualizado')
     last_scheduled = fields.Datetime(string='Último schedule', readonly=True)
@@ -124,6 +117,7 @@ class ProjectProject(models.Model):
             'schedule_dirty': False,
             'last_scheduled': fields.Datetime.now(),
         })
+        self._check_horizon_overrun()
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
@@ -135,9 +129,30 @@ class ProjectProject(models.Model):
             },
         }
 
+    def _check_horizon_overrun(self):
+        """Avisa (sin sobreescribir self.date) cuando el horizonte de
+        scheduling calculado se extiende más allá de la fecha de vencimiento
+        pactada del proyecto."""
+        self.ensure_one()
+        start = self.date_start or fields.Date.today()
+        computed_end = self._tjp_derived_horizon(start)
+        if self.date and computed_end > self.date:
+            msg = _(
+                'El schedule calculado se extiende hasta %(computed)s, más allá '
+                'de la fecha de vencimiento pactada (%(agreed)s). Requiere revisión.'
+            ) % {'computed': computed_end, 'agreed': self.date}
+            self.message_post(body=msg)
+            self.activity_schedule(
+                'mail.mail_activity_data_todo',
+                date_deadline=fields.Date.today(),
+                summary=_('Revisar horizonte de planificación'),
+                note=msg,
+                user_id=self.user_id.id or self.env.user.id,
+            )
+
     def _action_unscheduled_tasks_wizard(self, message):
         self.ensure_one()
-        suggested = self._tjp_suggest_horizon(self.tj_now or fields.Date.today())
+        suggested = self._tjp_suggest_horizon(self.date_start or fields.Date.today())
         wizard = self.env['insight.unscheduled.tasks.wizard'].create({
             'project_id': self.id,
             'message': message,
@@ -191,7 +206,7 @@ class ProjectProject(models.Model):
 
     def _tj_unscheduled_message(self, n_unscheduled):
         self.ensure_one()
-        start = self.tj_now or fields.Date.today()
+        start = self.date_start or fields.Date.today()
         current_end = self._tjp_project_end_date(start)
         message = _(
             '%(n)d tarea(s) no entran en el horizonte de planificación actual '
@@ -275,6 +290,8 @@ class ProjectProject(models.Model):
             lambda t: not t.parent_id
         ).sorted('sequence'):
             lines += self._tjp_task_block(task, depth=0)
+        for milestone in self.milestone_ids:
+            lines += self._tjp_milestone_block(milestone)
         lines += self._tjp_reports(scenarios)
         return '\n'.join(lines)
 
@@ -283,7 +300,7 @@ class ProjectProject(models.Model):
             scenarios = self.scenario_ids
         proj_id = f'p{self.id}'
         name = (self.name or 'Project').replace('"', "'")
-        start = self.tj_now or fields.Date.today()
+        start = self.date_start or fields.Date.today()
         end = self._tjp_project_end_date(start)
         tz = self.tj_timezone or 'UTC'
 
@@ -314,11 +331,18 @@ class ProjectProject(models.Model):
         return lines
 
     def _tjp_project_end_date(self, start):
-        if self.tj_end_date and self.tj_end_date > start:
-            return self.tj_end_date
+        if self.date and self.date > start:
+            return self.date
+        return self._tjp_derived_horizon(start)
+
+    def _tjp_derived_horizon(self, start):
+        """Horizonte estimado a partir de las tareas, ignorando self.date —
+        usado tanto como fallback de _tjp_project_end_date (cuando no hay
+        fecha pactada) como para detectar, en _check_horizon_overrun, si el
+        trabajo real excede la fecha pactada."""
         latest = None
         for task in self.task_ids:
-            # date_deadline es Datetime (nativo de project); start/tj_end_date
+            # date_deadline es Datetime (nativo de project); start/date
             # son Date — hay que normalizar antes de comparar.
             deadline = task.date_deadline.date() if task.date_deadline else False
             if deadline and (latest is None or deadline > latest):
@@ -369,7 +393,7 @@ class ProjectProject(models.Model):
         if calendar:
             lines += self._tjp_calendar_hours(calendar)
 
-        ref_date = self.tj_now or fields.Date.today()
+        ref_date = self.date_start or fields.Date.today()
         leaves = self.env['hr.leave'].search([
             ('employee_id', '=', employee.id),
             ('state', '=', 'validate'),
@@ -428,9 +452,7 @@ class ProjectProject(models.Model):
             lambda t: t.project_id == self
         ).sorted('sequence')
 
-        if task.is_milestone:
-            lines.append(f'{ind}  milestone')
-        elif not child_tasks:
+        if not child_tasks:
             # Leaf task: emit effort/duration and allocations
             if task.allocated_hours:
                 allocate_lines = self._tjp_allocate(task)
@@ -459,6 +481,27 @@ class ProjectProject(models.Model):
 
         lines.append(f'{ind}}}')
         lines.append('')
+        return lines
+
+    def _tjp_milestone_block(self, milestone):
+        """Un project.milestone se exporta como su propia tarea TJP
+        sintética de 0 esfuerzo (`milestone`), separada de las tareas
+        reales, que depende de todas las tareas de este proyecto enlazadas
+        a él (milestone.task_ids). Se omite si no tiene ninguna tarea
+        enlazada en este proyecto: no hay contra qué anclarla en el
+        schedule."""
+        dep_tasks = milestone.task_ids.filtered(lambda t: t.project_id == self)
+        if not dep_tasks:
+            return []
+        m_id = self._tjp_milestone_id(milestone)
+        m_name = (milestone.name or 'Milestone').replace('"', "'")
+        lines = [
+            f'task {m_id} "{m_name}" {{',
+            '  milestone',
+        ]
+        for dep in dep_tasks:
+            lines.append(f'  depends {self._tjp_task_abs_path(dep)}')
+        lines += ['}', '']
         return lines
 
     def _tjp_allocate(self, task):
@@ -524,6 +567,10 @@ class ProjectProject(models.Model):
     @staticmethod
     def _tjp_task_id(task):
         return f't{task.id}'
+
+    @staticmethod
+    def _tjp_milestone_id(milestone):
+        return f'm{milestone.id}'
 
     @staticmethod
     def _tjp_task_abs_path(task):
@@ -602,29 +649,38 @@ class ProjectProject(models.Model):
         valid_task_ids = set(
             self.env['project.task'].search([('project_id', '=', self.id)]).ids
         )
+        valid_milestone_ids = set(self.milestone_ids.ids)
 
         vals_list = []
+        milestone_dates = {}
         first_line = csv_content.split('\n')[0] if csv_content else ''
         delimiter = ';' if ';' in first_line else ','
         reader = csv.DictReader(io.StringIO(csv_content), delimiter=delimiter)
         for row in reader:
             norm = {k.strip().lower(): (v or '').strip() for k, v in row.items() if k is not None}
-            task_odoo_id = self._parse_task_id_from_tj_id(norm.get('id', ''))
-            if not task_odoo_id or task_odoo_id not in valid_task_ids:
+            tj_id = norm.get('id', '')
+            task_odoo_id = self._parse_task_id_from_tj_id(tj_id)
+            if task_odoo_id and task_odoo_id in valid_task_ids:
+                vals_list.append({
+                    'task_id': task_odoo_id,
+                    'scenario_id': scenario.id,
+                    'start_scheduled': self._parse_tj_datetime(norm.get('start', ''), tz_name),
+                    'end_scheduled': self._parse_tj_datetime(norm.get('end', ''), tz_name),
+                    'effort_days': self._parse_tj_duration(norm.get('effort', '')),
+                    'duration_days': self._parse_tj_duration(norm.get('duration', '')),
+                    'is_critical_path': self._parse_tj_criticalness(norm.get('criticalness', '')),
+                    'bsi': norm.get('bsi', ''),
+                    'resource_ids': [(6, 0, self._parse_tj_resource_ids(norm.get('resources', '')))],
+                })
                 continue
-            vals_list.append({
-                'task_id': task_odoo_id,
-                'scenario_id': scenario.id,
-                'start_scheduled': self._parse_tj_datetime(norm.get('start', ''), tz_name),
-                'end_scheduled': self._parse_tj_datetime(norm.get('end', ''), tz_name),
-                'effort_days': self._parse_tj_duration(norm.get('effort', '')),
-                'duration_days': self._parse_tj_duration(norm.get('duration', '')),
-                'is_critical_path': self._parse_tj_criticalness(norm.get('criticalness', '')),
-                'bsi': norm.get('bsi', ''),
-                'resource_ids': [(6, 0, self._parse_tj_resource_ids(norm.get('resources', '')))],
-            })
+            milestone_odoo_id = self._parse_milestone_id_from_tj_id(tj_id)
+            if scenario.is_baseline and milestone_odoo_id and milestone_odoo_id in valid_milestone_ids:
+                end = self._parse_tj_datetime(norm.get('end', ''), tz_name)
+                milestone_dates[milestone_odoo_id] = end.date() if end else False
         if vals_list:
             Schedule.create(vals_list)
+        for milestone_id, scheduled_date in milestone_dates.items():
+            self.env['project.milestone'].browse(milestone_id).tj_scheduled_date = scheduled_date
 
     @staticmethod
     def _parse_task_id_from_tj_id(tj_id):
@@ -635,6 +691,16 @@ class ProjectProject(models.Model):
             return int(tj_id.strip().split('.')[-1].lstrip('t'))
         except (ValueError, IndexError):
             return None
+
+    @staticmethod
+    def _parse_milestone_id_from_tj_id(tj_id):
+        """Extract Odoo project.milestone ID from a synthetic TJ3 milestone
+        task id (e.g. 'm42' → 42). Milestones are always root-level, never
+        nested under a real task."""
+        if not tj_id:
+            return None
+        match = re.fullmatch(r'm(\d+)', tj_id.strip())
+        return int(match.group(1)) if match else None
 
     @staticmethod
     def _parse_tj_datetime(value, tz_name='UTC'):

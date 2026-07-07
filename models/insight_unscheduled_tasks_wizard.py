@@ -13,7 +13,13 @@ class InsightUnscheduledTasksWizard(models.TransientModel):
     def action_extend_horizon(self):
         self.ensure_one()
         if self.suggested_horizon:
-            self.project_id.tj_end_date = self.suggested_horizon
+            # project.project.write() descarta silenciosamente un `date` sin
+            # `date_start` (par tratado como rango) — hay que escribir ambos
+            # a la vez si el proyecto todavía no tiene fecha de inicio.
+            vals = {'date': self.suggested_horizon}
+            if not self.project_id.date_start:
+                vals['date_start'] = fields.Date.today()
+            self.project_id.write(vals)
         return {'type': 'ir.actions.act_window_close'}
 
     def action_modify_project(self):

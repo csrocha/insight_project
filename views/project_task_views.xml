@@ -6,9 +6,7 @@
         <field name="inherit_id" ref="project.view_task_form2"/>
         <field name="arch" type="xml">
             <xpath expr="//field[@name='tag_ids']" position="after">
-                <field name="is_milestone"/>
-                <field name="tj_dependency_type"
-                       invisible="is_milestone"/>
+                <field name="tj_dependency_type"/>
             </xpath>
             <xpath expr="//notebook" position="inside">
                 <page string="Schedule" name="schedule">
@@ -21,10 +19,6 @@
                         <group string="Estado">
                             <field name="is_critical_path" readonly="1"/>
                         </group>
-                    </group>
-                    <group string="Staffing">
-                        <field name="required_skill_ids" widget="many2many_tags"/>
-                        <field name="resource_pool_ids" widget="many2many_tags"/>
                     </group>
                 </page>
             </xpath>

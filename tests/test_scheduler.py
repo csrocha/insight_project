@@ -229,7 +229,7 @@ class TestActionRunScheduleUnscheduledTasks(TransactionCase):
             'suggested_horizon': '2027-01-01',
         })
         wizard.action_extend_horizon()
-        self.assertEqual(str(self.project.tj_end_date), '2027-01-01')
+        self.assertEqual(str(self.project.date), '2027-01-01')
 
     def test_wizard_modify_project_does_not_touch_the_horizon(self):
         wizard = self.env['insight.unscheduled.tasks.wizard'].create({
@@ -238,4 +238,63 @@ class TestActionRunScheduleUnscheduledTasks(TransactionCase):
             'suggested_horizon': '2027-01-01',
         })
         wizard.action_modify_project()
-        self.assertFalse(self.project.tj_end_date)
+        self.assertFalse(self.project.date)
+
+
+class TestActionRunScheduleHorizonWarning(TransactionCase):
+    """action_run_schedule debe avisar (chatter + actividad) cuando el
+    horizonte derivado de las tareas supera la fecha pactada (self.date),
+    sin sobreescribir jamás self.date."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Horizon Warning Project',
+            'is_tj_enabled': True,
+            'date_start': '2026-01-01',
+            'date': '2026-02-01',
+        })
+        cls.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        })
+        cls.env['ir.config_parameter'].sudo().set_param('insight_project.tj_microservice_url', 'http://tj3.local')
+
+    def _run_schedule(self):
+        with patch.object(
+            ProjectProject, '_call_tj_microservice',
+            return_value={'csv_files': {}},
+        ):
+            self.project.action_run_schedule()
+
+    def test_warns_and_does_not_overwrite_agreed_date_when_horizon_overruns(self):
+        self._run_schedule()
+
+        self.assertEqual(
+            str(self.project.date), '2026-02-01',
+            'self.date (fecha pactada) nunca debe sobreescribirse automáticamente',
+        )
+
+        messages = self.env['mail.message'].search([
+            ('model', '=', 'project.project'), ('res_id', '=', self.project.id),
+        ])
+        self.assertTrue(
+            messages.filtered(lambda m: 'Requiere revisión' in (m.body or '')),
+            'Debe postearse un aviso en el chatter cuando el horizonte derivado supera self.date',
+        )
+
+        activities = self.env['mail.activity'].search([
+            ('res_model', '=', 'project.project'), ('res_id', '=', self.project.id),
+        ])
+        self.assertTrue(activities, 'Debe agendarse una actividad de revisión')
+        self.assertEqual(activities.user_id, self.project.user_id or self.env.user)
+
+    def test_no_warning_when_agreed_date_covers_the_horizon(self):
+        self.project.date = '2028-06-29'  # más allá del fallback de +2 años
+
+        self._run_schedule()
+
+        activities = self.env['mail.activity'].search([
+            ('res_model', '=', 'project.project'), ('res_id', '=', self.project.id),
+        ])
+        self.assertFalse(activities, 'No debe agendarse revisión si self.date ya cubre el horizonte derivado')

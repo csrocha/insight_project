@@ -53,6 +53,36 @@ class TestImportWizardParsing(TransactionCase):
             with self.subTest(raw=raw):
                 self.assertAlmostEqual(InsightImportWizard._effort_to_hours(raw), expected)
 
+    def test_find_milestone_task_ids_detects_bare_keyword(self):
+        tjp = (
+            'task t1 "Deliverable" {\n'
+            '  effort 5d\n'
+            '}\n'
+            'task t2 "Go live" {\n'
+            '  milestone\n'
+            '  depends !t1\n'
+            '}\n'
+        )
+        self.assertEqual(InsightImportWizard._find_milestone_task_ids(tjp), {'t2'})
+
+    def test_find_milestone_task_ids_ignores_nested_children(self):
+        """A parent task without its own `milestone` line must not be
+        flagged just because a nested child happens to declare one."""
+        tjp = (
+            'task t1 "Phase" {\n'
+            '  task t1_1 "Kickoff" {\n'
+            '    milestone\n'
+            '  }\n'
+            '}\n'
+        )
+        self.assertEqual(InsightImportWizard._find_milestone_task_ids(tjp), {'t1_1'})
+
+    def test_parse_csv_preview_flags_milestone_rows(self):
+        tasks, _ = InsightImportWizard._parse_csv_preview(self._TJ3_CSV, {'t2'})
+        by_bsi = {t['bsi']: t for t in tasks}
+        self.assertFalse(by_bsi['1']['is_milestone'])
+        self.assertTrue(by_bsi['2']['is_milestone'])
+
     def _stages(self):
         return object(), object(), object()  # refine, backlog, done
 
@@ -267,3 +297,35 @@ class TestImportWizardAction(TransactionCase):
         ], limit=1)
         stage_backlog = self.env.ref('insight_project.task_type_planned')
         self.assertEqual(task.stage_id, stage_backlog)
+
+    # -- Milestone linking -------------------------------------------------
+
+    def test_milestone_flagged_task_gets_linked_to_new_milestone(self):
+        """A task detected as a TJP `milestone` (see _find_milestone_task_ids)
+        must not just be created as a bare 0-effort task: it must be linked
+        to a real project.milestone, same as our own tjp export/import
+        round-trip does."""
+        wizard = self._make_wizard(tasks=[
+            {'bsi': '1', 'name': 'Go live', 'effort': '0.0d',
+             'resources': [], 'complete': '0%', 'is_milestone': True},
+        ])
+        wizard.action_import()
+
+        task = self.env['project.task'].search([
+            ('project_id', '=', self.project.id), ('name', '=', 'Go live')
+        ], limit=1)
+        self.assertTrue(task.milestone_id, "Task should be linked to a project.milestone")
+        self.assertEqual(task.milestone_id.name, 'Go live')
+        self.assertTrue(self.project.allow_milestones)
+
+    def test_non_milestone_task_has_no_milestone_link(self):
+        wizard = self._make_wizard(tasks=[
+            {'bsi': '1', 'name': 'Regular Task', 'effort': '5.0d',
+             'resources': [], 'complete': '0%', 'is_milestone': False},
+        ])
+        wizard.action_import()
+
+        task = self.env['project.task'].search([
+            ('project_id', '=', self.project.id), ('name', '=', 'Regular Task')
+        ], limit=1)
+        self.assertFalse(task.milestone_id)

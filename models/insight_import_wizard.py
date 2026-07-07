@@ -151,9 +151,15 @@ class InsightImportWizard(models.TransientModel):
         if not csv_files:
             csv_files = all_csvs  # fallback: use all if naming didn't match
 
+        # Best-effort detection of which TJ ids carry a bare `milestone`
+        # attribute in the source .tjp, so the resulting Odoo task can be
+        # linked to a project.milestone on import instead of silently
+        # losing that information (see _find_milestone_task_ids).
+        milestone_tj_ids = self._find_milestone_task_ids(all_content)
+
         # Parse tasks and resource IDs from TJ3 output (first schedule CSV)
         first_csv = next(iter(csv_files.values()))
-        tasks, resource_ids = self._parse_csv_preview(first_csv)
+        tasks, resource_ids = self._parse_csv_preview(first_csv, milestone_tj_ids)
 
         # Enrich resource IDs with display names from source files (best-effort)
         resource_names = {
@@ -187,7 +193,28 @@ class InsightImportWizard(models.TransientModel):
         return self._reopen()
 
     @staticmethod
-    def _parse_csv_preview(csv_content):
+    def _find_milestone_task_ids(tjp_text):
+        """Best-effort detection of which TJ ids carry a bare `milestone`
+        attribute, by scanning from each `task <id> "<name>" {` opening
+        line up to the next `task` keyword found forward (its own nested
+        subtask, or the next sibling once its block closes) — TJ3 authors
+        write attributes right after the opening brace, before any nested
+        subtasks, same convention our own exporter follows. Not a real
+        parser (no brace-matching), so it's a heuristic, not a guarantee."""
+        milestone_ids = set()
+        opens = list(re.finditer(r'\btask\s+(\S+)\s+"[^"]*"\s*\{', tjp_text))
+        for i, match in enumerate(opens):
+            tj_id = match.group(1)
+            start = match.end()
+            end = opens[i + 1].start() if i + 1 < len(opens) else len(tjp_text)
+            block = tjp_text[start:end]
+            if re.search(r'^\s*milestone\b', block, re.MULTILINE):
+                milestone_ids.add(tj_id)
+        return milestone_ids
+
+    @staticmethod
+    def _parse_csv_preview(csv_content, milestone_tj_ids=None):
+        milestone_tj_ids = milestone_tj_ids or set()
         # TJ3 uses semicolons as CSV delimiter
         first_line = csv_content.split('\n')[0] if csv_content else ''
         delimiter = ';' if ';' in first_line else ','
@@ -203,12 +230,16 @@ class InsightImportWizard(models.TransientModel):
                 # Fallback: plain comma/space-separated IDs (no parens)
                 task_res = [r.strip() for r in re.split(r'[,;]+', res_str) if r.strip()]
             resource_ids.update(task_res)
+            # 'id' is the dotted TJ3 path (e.g. "root.sub.leaf"); its last
+            # segment is the local id used in the source `task <id> "..."`.
+            leaf_tj_id = norm.get('id', '').split('.')[-1]
             tasks.append({
                 'bsi': norm.get('bsi', ''),
                 'name': norm.get('name', ''),
                 'effort': norm.get('effort', ''),
                 'resources': task_res,
                 'complete': norm.get('complete', '0'),
+                'is_milestone': leaf_tj_id in milestone_tj_ids,
             })
         return tasks, resource_ids
 
@@ -317,6 +348,14 @@ class InsightImportWizard(models.TransientModel):
                 'stage_id': stage.id,
             })
             bsi_task_id[bsi] = task.id
+            if task_data.get('is_milestone'):
+                if not project.allow_milestones:
+                    project.allow_milestones = True
+                milestone = self.env['project.milestone'].create({
+                    'name': task_data['name'] or f'Hito {bsi}',
+                    'project_id': project.id,
+                })
+                task.milestone_id = milestone.id
 
         # Create scenarios and import schedules
         for filename, csv_content in csv_files.items():
@@ -344,9 +383,13 @@ class InsightImportWizard(models.TransientModel):
             'last_scheduled': fields.Datetime.now(),
         }
         if self.parsed_now:
-            vals['tj_now'] = self.parsed_now
+            vals['date_start'] = self.parsed_now
         if self.parsed_end:
-            vals['tj_end_date'] = self.parsed_end
+            vals['date'] = self.parsed_end
+            # project.project.write() descarta un `date` sin `date_start`
+            # (par tratado como rango) si el proyecto todavía no tiene uno.
+            if 'date_start' not in vals and not project.date_start:
+                vals['date_start'] = self.parsed_now or fields.Date.today()
         project.write(vals)
 
         return {

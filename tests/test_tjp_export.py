@@ -20,7 +20,7 @@ class TestTjpProjectHeader(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'IT Plan',
             'is_tj_enabled': True,
-            'tj_now': '2026-06-29',
+            'date_start': '2026-06-29',
         })
 
     def test_project_id_and_dates_in_header(self):
@@ -58,16 +58,16 @@ class TestTjpProjectEndDate(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'End Date Project',
             'is_tj_enabled': True,
-            'tj_now': '2026-06-29',
+            'date_start': '2026-06-29',
         })
 
     def test_explicit_horizon_wins(self):
-        self.project.tj_end_date = '2027-01-01'
-        end = self.project._tjp_project_end_date(self.project.tj_now)
+        self.project.date = '2027-01-01'
+        end = self.project._tjp_project_end_date(self.project.date_start)
         self.assertEqual(str(end), '2027-01-01')
 
     def test_falls_back_to_two_years_without_deadlines(self):
-        end = self.project._tjp_project_end_date(self.project.tj_now)
+        end = self.project._tjp_project_end_date(self.project.date_start)
         self.assertEqual(str(end), '2028-06-29')
 
     def test_derives_horizon_from_latest_task_deadline(self):
@@ -76,10 +76,10 @@ class TestTjpProjectEndDate(TransactionCase):
             'project_id': self.project.id,
             'date_deadline': '2026-09-01 00:00:00',
         })
-        end = self.project._tjp_project_end_date(self.project.tj_now)
+        end = self.project._tjp_project_end_date(self.project.date_start)
         # latest deadline (2026-09-01) + max((latest-start).days // 3, 30)
         self.assertGreater(str(end), '2026-09-01')
-        self.assertGreaterEqual((end - self.project.tj_now).days, 64 + 30)
+        self.assertGreaterEqual((end - self.project.date_start).days, 64 + 30)
 
 
 class TestTjpResourceBlock(TransactionCase):
@@ -90,7 +90,7 @@ class TestTjpResourceBlock(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Resource Block Project',
             'is_tj_enabled': True,
-            'tj_now': '2026-06-29',
+            'date_start': '2026-06-29',
         })
         cls.leave_type = cls.env['hr.leave.type'].create({
             'name': 'Test Annual Leave',
@@ -166,7 +166,7 @@ class TestTjpTaskBlock(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Task Block Project',
             'is_tj_enabled': True,
-            'tj_now': '2026-06-29',
+            'date_start': '2026-06-29',
         })
         cls.users = cls.env['res.users'].with_context(no_reset_password=True).create([
             {
@@ -249,11 +249,68 @@ class TestTjpTaskBlock(TransactionCase):
             '',
         ])
 
-    def test_milestone_emits_milestone_keyword(self):
-        task = self._task(name='Milestone Task', is_milestone=True, allocated_hours=8.0)
+    def test_task_linked_to_milestone_keeps_its_own_effort(self):
+        """A real task linked to a project.milestone via milestone_id keeps
+        emitting its own effort/duration — the milestone itself becomes a
+        separate synthetic TJP task (see TestTjpMilestoneBlock), it no
+        longer suppresses the linked task's block."""
+        milestone = self.env['project.milestone'].create({
+            'name': 'Entrega fase 1', 'project_id': self.project.id,
+        })
+        task = self._task(name='Milestone Task', allocated_hours=8.0, milestone_id=milestone.id)
         lines = self.project._tjp_task_block(task)
-        self.assertIn('  milestone', lines)
-        self.assertNotIn('  effort 1.00d', lines)
+        text = '\n'.join(lines)
+        self.assertIn('  effort 1.00d', text)
+        self.assertNotIn('  milestone', text)
+
+
+class TestTjpMilestoneBlock(TransactionCase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Milestone Block Project',
+            'is_tj_enabled': True,
+            'date_start': '2026-06-29',
+        })
+
+    def _task(self, **vals):
+        vals.setdefault('project_id', self.project.id)
+        return self.env['project.task'].create(vals)
+
+    def test_milestone_emits_synthetic_task_with_dependencies(self):
+        t1 = self._task(name='Deliverable 1', allocated_hours=8.0)
+        t2 = self._task(name='Deliverable 2', allocated_hours=8.0)
+        milestone = self.env['project.milestone'].create({
+            'name': 'Entrega fase 1', 'project_id': self.project.id,
+            'task_ids': [(6, 0, [t1.id, t2.id])],
+        })
+        lines = self.project._tjp_milestone_block(milestone)
+        self.assertEqual(lines, [
+            f'task m{milestone.id} "Entrega fase 1" {{',
+            '  milestone',
+            f'  depends !t{t1.id}',
+            f'  depends !t{t2.id}',
+            '}',
+            '',
+        ])
+
+    def test_milestone_without_tasks_emits_nothing(self):
+        milestone = self.env['project.milestone'].create({
+            'name': 'Sin tareas', 'project_id': self.project.id,
+        })
+        self.assertEqual(self.project._tjp_milestone_block(milestone), [])
+
+    def test_generate_tjp_includes_milestone_block(self):
+        t1 = self._task(name='Deliverable 1', allocated_hours=8.0)
+        milestone = self.env['project.milestone'].create({
+            'name': 'Entrega fase 1', 'project_id': self.project.id,
+            'task_ids': [(6, 0, [t1.id])],
+        })
+        text = self.project._generate_tjp()
+        self.assertIn(f'task m{milestone.id} "Entrega fase 1" {{', text)
+        self.assertIn(f'  depends !t{t1.id}', text)
 
     def test_three_level_nesting_indentation(self):
         root = self._task(name='Eje')
@@ -295,7 +352,7 @@ class TestGenerateTjpEndToEnd(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Full Plan',
             'is_tj_enabled': True,
-            'tj_now': '2026-06-29',
+            'date_start': '2026-06-29',
         })
         cls.user = cls.env['res.users'].with_context(no_reset_password=True).create({
             'name': 'Full Plan Resource',

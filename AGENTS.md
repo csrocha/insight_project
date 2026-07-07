@@ -9,8 +9,7 @@ ver el [AGENTS.md de fop_odoo_theme](https://github.com/observatoriopyme/fop_odo
 
 ## Contexto del módulo
 
-- Extiende `project.project` y `project.task` — revisar compatibilidad con `project_timeline`
-  (ambos heredan `project.task` con `_inherit`, sin conflicto siempre que no pisen los mismos campos)
+- Extiende `project.project` y `project.task`
 - El microservicio TJ3 es el canal de scheduling; Odoo no ejecuta TJ3 directamente
 - `insight.task.schedule` es de solo escritura del microservicio — el usuario no edita estos registros
 

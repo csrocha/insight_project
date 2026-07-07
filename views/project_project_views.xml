@@ -10,10 +10,6 @@
                     <group>
                         <group>
                             <field name="is_tj_enabled"/>
-                            <field name="tj_now"
-                                   invisible="not is_tj_enabled"/>
-                            <field name="tj_end_date"
-                                   invisible="not is_tj_enabled"/>
                             <field name="tj_timezone"
                                    invisible="not is_tj_enabled"/>
                             <field name="tj_allocation_selection"
@@ -23,9 +19,6 @@
                             <field name="schedule_dirty" readonly="1"/>
                             <field name="last_scheduled" readonly="1"/>
                         </group>
-                    </group>
-                    <group invisible="not is_tj_enabled">
-                        <field name="candidate_user_ids" widget="many2many_tags"/>
                     </group>
                     <div class="mb16">
                         <button name="action_run_schedule" type="object"

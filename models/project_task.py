@@ -5,9 +5,9 @@ from odoo import models, fields, api
 class ProjectTask(models.Model):
     _inherit = 'project.task'
 
-    # blocked / is_critical_path / is_milestone viven en project_improve
-    # (genéricos, sin motor de scheduling); acá solo se le agrega el
-    # cómputo de is_critical_path a partir del schedule TJ3.
+    # blocked / is_critical_path viven en project_improve (genéricos, sin
+    # motor de scheduling); acá solo se le agrega el cómputo de
+    # is_critical_path a partir del schedule TJ3.
     is_critical_path = fields.Boolean(
         string='Camino crítico', compute='_compute_scheduled', store=True,
     )

@@ -9,6 +9,173 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.2.1] - 2026-07-07
+
+### Prompt
+
+> "En la vista de Form de Proyecto aparece todas las propiedades de
+> insight_project y project_improve. Deberíamos separar las cosas: Lo de
+> project_improve debería ir en Settings, y mejor si acomodamos con
+> temática en las secciones TASK MANAGEMENT y TIME MANAGEMENT."
+>
+> Sobre no duplicar las fechas del proyecto: "project.tj_now ==
+> project.date_start y project.tj_end_date == project.date: No es
+> necesario tj_now y tj_end_date, usemos las variables que ya vienen en
+> project."
+>
+> Sobre `candidate_user_ids`: "se merece su propia hoja. Esa hoja sería
+> 'Candidatos' o 'Recursos' o 'Equipo de asignado'."
+>
+> Sobre los skills de tarea: "Falta que aparezcan los skills requeridos
+> en la vista de tareas. Habría que agregarlos en una página dentro del
+> formulario. Los skills pertenecen a project_improve."
+>
+> Sobre no pisar la fecha pactada: "Pusimos que no sobreescribas el fin
+> del proyecto, pero si la fecha es superior a la fecha pactada hay que
+> avisar en el chatter de que el proyecto va a durar más que lo que está
+> planificado. Que requiere revisión."
+
+### Discusión de diseño
+
+- Todo lo que se veía en la pestaña "TaskJuggler" del form de Proyecto lo
+  inyectaba un único archivo (`views/project_project_views.xml`),
+  incluyendo `candidate_user_ids` — que en realidad es un campo de
+  `project_improve`, usado por su propio cómputo de `resource_pool_ids`
+  independientemente de si TaskJuggler está habilitado, de ahí que
+  estuviera escondido detrás de `invisible="not is_tj_enabled"` sin
+  motivo real. El mismo patrón se repetía en la vista de Tarea con
+  `required_skill_ids`/`resource_pool_ids` dentro del grupo "Staffing" de
+  la pestaña "Schedule".
+- Se evaluó mover esos campos a Settings > Task Management / Time
+  Management (grupos nativos de `project.edit_project`), pero se
+  descartó: no son "ajustes" tipo toggle, son datos de trabajo diario —
+  mejor una pestaña propia en `project_improve`, separada por completo de
+  `insight_project` (ver su CHANGELOG).
+- `date_start`/`date` (nativos de `project.project`, con constraint SQL
+  `date >= date_start`) ya cubrían exactamente lo que `tj_now`/
+  `tj_end_date` duplicaban, y ya son visibles/editables en el form
+  principal vía el daterange "Planned Date" — se eliminan los campos
+  propios y todo el código de scheduling pasa a leerlos directamente.
+- El horizonte auto-calculado (deadline de tarea más lejana + buffer, o
+  +2 años desde `date_start`) nunca debe pisar la fecha pactada (`date`).
+  Comparar el resultado de `_tjp_project_end_date` contra `self.date` es
+  un chequeo autorreferencial que nunca dispara, porque esa función ya
+  devuelve `self.date` como override cuando está seteada — se separó un
+  `_tjp_derived_horizon` (ignora `date`, solo deriva de las tareas) para
+  que `_check_horizon_overrun` compare contra algo distinto de su propio
+  input. Si lo excede, postea un chatter + agenda una actividad al
+  Project Manager, sin escribir nunca en `self.date`.
+- Bug real encontrado al verificar contra una instancia real de Odoo:
+  `project.project.write()` descarta silenciosamente un `date` sin
+  `date_start` cuando el proyecto nunca tuvo uno (los trata como un
+  rango) — rompía el wizard "extender horizonte" y podía romper el
+  import de un `.tjp` externo con solo una de las dos fechas parseada.
+  Se corrigió escribiendo ambos campos juntos cuando `date_start`
+  todavía no existe.
+- Migración de datos en `migrations/17.0.9.2.1/pre-migrate.py`: copia
+  `tj_now` → `date_start` y `tj_end_date` → `date` (solo donde el campo
+  nativo todavía esté vacío) antes de que el ORM dropee las columnas
+  viejas al actualizar, para no perder overrides ya cargados en
+  proyectos existentes.
+
+### Quitado
+
+- `project.project.tj_now`, `project.project.tj_end_date`: duplicaban
+  `date_start`/`date`, nativos de `project.project`.
+- Los campos `candidate_user_ids` de la pestaña "TaskJuggler" del form de
+  Proyecto, y el grupo "Staffing" (`required_skill_ids`/
+  `resource_pool_ids`) de la pestaña "Schedule" del form de Tarea — ahora
+  tienen vista propia en `project_improve` (ver su CHANGELOG).
+
+### Cambiado
+
+- `insight_import_wizard.py` e `insight_unscheduled_tasks_wizard.py`
+  escriben `date_start`/`date` en vez de `tj_now`/`tj_end_date`.
+
+### Agregado
+
+- `project.project._check_horizon_overrun()`: avisa por chatter +
+  actividad cuando el horizonte de scheduling calculado supera la fecha
+  de vencimiento pactada, sin sobreescribirla.
+- `migrations/17.0.9.2.1/pre-migrate.py`: preserva los valores de
+  `tj_now`/`tj_end_date` ya cargados, copiándolos a `date_start`/`date`
+  antes del drop de columnas.
+
+---
+
+## [17.0.9.2.0] - 2026-07-07
+
+### Prompt
+
+> "Veo que algo hicimos mal en la importación y exportación de tjp,
+> específicamente en el tema milestone. Estamos agregando milestone en el
+> proyecto como tasks, pero son tasks? Por favor revisa una mejor
+> implementación de la que estamos teniendo ahora sin usar el
+> is_milestone, sino usando las características propias del addon
+> project."
+
+### Discusión de diseño
+
+- `_tjp_task_block` forzaba un hito a ser una tarea real con
+  `is_milestone=True`, suprimiendo su `effort`/`duration` aunque tuviera
+  horas asignadas — el hack vivía enteramente en el export, y nada en el
+  import (ni el CSV de schedule, ni el wizard de `.tjp` externo) leía la
+  keyword `milestone` de vuelta: el roundtrip perdía el hito.
+- Se decidió que cada `project.milestone` (nativo de `project`, ver
+  CHANGELOG de `project_improve`) se exporte como su **propia tarea TJP
+  sintética** de 0 esfuerzo (`task m{id} "..." { milestone; depends
+  !t{task1}, ... }`), con `depends` hacia las tareas reales enlazadas vía
+  `milestone_id` (`milestone.task_ids`). Las tareas reales dejan de tener
+  ninguna rama especial en `_tjp_task_block`: siempre emiten su propio
+  effort/duration, estén o no ligadas a un hito. Esto resuelve el
+  desajuste de fondo entre cómo TJ3 entiende "milestone" (propiedad de
+  una tarea puntual) y cómo lo entiende Odoo (un hito de proyecto al que
+  varias tareas reales pueden apuntar).
+- IDs sintéticos con prefijo `m` (`_tjp_milestone_id`) en vez de `t`: el
+  parser existente `_parse_task_id_from_tj_id` ya descarta silenciosamente
+  cualquier id que no empiece con `t` (falla el `int()` y cae al
+  `except`), así que agregar filas `m{id}` al CSV de schedule no rompe el
+  import de tareas existente — solo hacía falta un parser hermano
+  (`_parse_milestone_id_from_tj_id`) para leerlas aparte.
+- La fecha que TJ3 calcula para un hito se guarda en un campo nuevo,
+  `project.milestone.tj_scheduled_date` (solo lectura, solo se sincroniza
+  desde el escenario baseline, mismo criterio que `_sync_gantt_dates` usa
+  para tareas) — no pisa `deadline`, que es la fecha objetivo editable
+  por el usuario, no la calculada por el schedule.
+- El wizard de import de `.tjp` externos (`insight_import_wizard.py`)
+  tampoco reconstruía milestones antes de este cambio; se aprovechó para
+  agregarle detección best-effort de la keyword `milestone` por bloque de
+  tarea en el texto fuente (`_find_milestone_task_ids`, sin parser real de
+  llaves — asume que los atributos de una tarea van antes de cualquier
+  subtarea anidada, igual que nuestro propio exporter) y crear/enlazar un
+  `project.milestone` por cada tarea detectada así al importar.
+
+### Cambiado
+
+- `_tjp_task_block`: ya no suprime `effort`/`duration` de una tarea real
+  por `is_milestone` (campo removido de `project_improve`, ver su
+  CHANGELOG). Una tarea enlazada a un hito vía `milestone_id` sigue
+  emitiendo su propio bloque normalmente.
+- `views/project_task_views.xml`: quitado el checkbox manual de
+  `is_milestone`; el campo nativo `milestone_id` ya aparece en el form
+  estándar de `project.task` cuando el proyecto tiene `allow_milestones`
+  activo.
+
+### Agregado
+
+- `_tjp_milestone_id` / `_tjp_milestone_block`: exportan cada
+  `project.milestone` del proyecto como tarea TJP sintética separada.
+- `_parse_milestone_id_from_tj_id` y el manejo de filas `m{id}` en
+  `_import_scenario_csv`: sincronizan `project.milestone.tj_scheduled_date`
+  desde el escenario baseline.
+- `models/project_milestone.py`: extiende `project.milestone` con
+  `tj_scheduled_date`.
+- `insight_import_wizard.py`: `_find_milestone_task_ids` detecta hitos en
+  un `.tjp` externo y `action_import` los enlaza a un `project.milestone`
+  nuevo en vez de crearlos como tareas sin distinción.
+
+---
+
 ## [17.0.9.1.2] - 2026-07-06
 
 ### Prompt
