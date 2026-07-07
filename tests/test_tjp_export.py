@@ -257,11 +257,43 @@ class TestTjpTaskBlock(TransactionCase):
         milestone = self.env['project.milestone'].create({
             'name': 'Entrega fase 1', 'project_id': self.project.id,
         })
-        task = self._task(name='Milestone Task', allocated_hours=8.0, milestone_id=milestone.id)
+        task = self._task(
+            name='Milestone Task', allocated_hours=8.0, milestone_id=milestone.id,
+            user_ids=[(6, 0, [self.u1.id])],
+        )
         lines = self.project._tjp_task_block(task)
         text = '\n'.join(lines)
         self.assertIn('  effort 1.00d', text)
         self.assertNotIn('  milestone', text)
+
+    def test_three_level_nesting_indentation(self):
+        root = self._task(name='Eje')
+        mid = self._task(name='Fase', parent_id=root.id)
+        leaf = self._task(name='Cierre', parent_id=mid.id, allocated_hours=16.0, user_ids=[(6, 0, [self.u1.id])])
+
+        lines = self.project._tjp_task_block(root, depth=0)
+        text = '\n'.join(lines)
+        self.assertIn(f'task t{root.id} "Eje" {{', text)
+        self.assertIn(f'  task t{mid.id} "Fase" {{', text)
+        self.assertIn(f'    task t{leaf.id} "Cierre" {{', text)
+        self.assertIn('      effort 2.00d', text)
+
+    def test_dependency_renders_absolute_path(self):
+        blocker = self._task(name='Bloqueante')
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        lines = self.project._tjp_task_block(dependent)
+        self.assertIn(f'  depends !t{blocker.id}', lines)
+
+    def test_reports_one_per_scenario(self):
+        plan = self.env['insight.scenario'].create(
+            {'name': 'Plan', 'project_id': self.project.id, 'is_baseline': True})
+        noai = self.env['insight.scenario'].create({'name': 'Noai', 'project_id': self.project.id})
+        lines = self.project._tjp_reports(plan | noai)
+        text = '\n'.join(lines)
+        self.assertIn('taskreport "schedule_plan" {', text)
+        self.assertIn('  scenarios plan', text)
+        self.assertIn('taskreport "schedule_noai" {', text)
+        self.assertIn('  scenarios noai', text)
 
 
 class TestTjpMilestoneBlock(TransactionCase):
@@ -277,6 +309,7 @@ class TestTjpMilestoneBlock(TransactionCase):
 
     def _task(self, **vals):
         vals.setdefault('project_id', self.project.id)
+        vals.setdefault('user_ids', [(6, 0, [])])
         return self.env['project.task'].create(vals)
 
     def test_milestone_emits_synthetic_task_with_dependencies(self):
@@ -311,35 +344,6 @@ class TestTjpMilestoneBlock(TransactionCase):
         text = self.project._generate_tjp()
         self.assertIn(f'task m{milestone.id} "Entrega fase 1" {{', text)
         self.assertIn(f'  depends !t{t1.id}', text)
-
-    def test_three_level_nesting_indentation(self):
-        root = self._task(name='Eje')
-        mid = self._task(name='Fase', parent_id=root.id)
-        leaf = self._task(name='Cierre', parent_id=mid.id, allocated_hours=16.0, user_ids=[(6, 0, [self.u1.id])])
-
-        lines = self.project._tjp_task_block(root, depth=0)
-        text = '\n'.join(lines)
-        self.assertIn(f'task t{root.id} "Eje" {{', text)
-        self.assertIn(f'  task t{mid.id} "Fase" {{', text)
-        self.assertIn(f'    task t{leaf.id} "Cierre" {{', text)
-        self.assertIn('      effort 2.00d', text)
-
-    def test_dependency_renders_absolute_path(self):
-        blocker = self._task(name='Bloqueante')
-        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
-        lines = self.project._tjp_task_block(dependent)
-        self.assertIn(f'  depends !t{blocker.id}', lines)
-
-    def test_reports_one_per_scenario(self):
-        plan = self.env['insight.scenario'].create(
-            {'name': 'Plan', 'project_id': self.project.id, 'is_baseline': True})
-        noai = self.env['insight.scenario'].create({'name': 'Noai', 'project_id': self.project.id})
-        lines = self.project._tjp_reports(plan | noai)
-        text = '\n'.join(lines)
-        self.assertIn('taskreport "schedule_plan" {', text)
-        self.assertIn('  scenarios plan', text)
-        self.assertIn('taskreport "schedule_noai" {', text)
-        self.assertIn('  scenarios noai', text)
 
 
 class TestGenerateTjpEndToEnd(TransactionCase):

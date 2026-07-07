@@ -9,6 +9,29 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.2.2] - 2026-07-07
+
+### Prompt
+
+> Seguimiento de la verificación contra Odoo real de v17.0.9.2.1: 2 de los
+> 3 tests de `TestTjpMilestoneBlock`/`TestTjpTaskBlock` fallaban con
+> `UserError: No se encontró un usuario Odoo para el contacto "OdooBot"`
+> porque las tareas de esos fixtures se creaban sin `user_ids` explícito,
+> heredando un default que arrastraba a `_tjp_allocate`/`_tjp_resource_id`
+> a un recurso sin correspondencia limpia.
+
+### Arreglado
+
+- `TestTjpMilestoneBlock._task`: default `user_ids=[(6, 0, [])]` para que
+  las tareas del fixture no arrastren un usuario implícito al pool de
+  recursos.
+- `test_three_level_nesting_indentation`, `test_dependency_renders_absolute_path`
+  y `test_reports_one_per_scenario` se reubican en `TestTjpTaskBlock`
+  (donde `self.u1`/`self.u2`/`self.u3` están definidos), en vez de
+  `TestTjpMilestoneBlock`.
+
+---
+
 ## [17.0.9.2.1] - 2026-07-07
 
 ### Prompt
