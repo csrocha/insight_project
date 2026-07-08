@@ -329,8 +329,20 @@ class InsightImportWizard(models.TransientModel):
         sorted_tasks = sorted(tasks, key=lambda t: self._bsi_sort_key(t['bsi']))
         for task_data in sorted_tasks:
             bsi = task_data['bsi']
-            parent_bsi = '.'.join(bsi.split('.')[:-1]) if '.' in bsi else None
 
+            # A TJP `milestone` is a project.milestone, not a project.task —
+            # it never gets its own task row (no bsi_task_id entry either,
+            # so nothing can end up parented under it).
+            if task_data.get('is_milestone'):
+                if not project.allow_milestones:
+                    project.allow_milestones = True
+                self.env['project.milestone'].create({
+                    'name': task_data['name'] or f'Hito {bsi}',
+                    'project_id': project.id,
+                })
+                continue
+
+            parent_bsi = '.'.join(bsi.split('.')[:-1]) if '.' in bsi else None
             user_ids = [
                 user_map[res_id].id
                 for res_id in task_data.get('resources', [])
@@ -348,14 +360,6 @@ class InsightImportWizard(models.TransientModel):
                 'stage_id': stage.id,
             })
             bsi_task_id[bsi] = task.id
-            if task_data.get('is_milestone'):
-                if not project.allow_milestones:
-                    project.allow_milestones = True
-                milestone = self.env['project.milestone'].create({
-                    'name': task_data['name'] or f'Hito {bsi}',
-                    'project_id': project.id,
-                })
-                task.milestone_id = milestone.id
 
         # Create scenarios and import schedules
         for filename, csv_content in csv_files.items():

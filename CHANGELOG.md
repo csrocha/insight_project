@@ -9,6 +9,65 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.5.1] - 2026-07-08
+
+### Prompt
+
+> "Acabo de ver cómo el siguiente milestone no apareció como milestone en
+> Odoo, sino como tarea. [...] Veo que el problema está en la importación.
+> [...] Quiero que hagas un nuevo test para reproducir este error. [...]
+> Veo que el test no es contra la base de datos. Quiero que pruebes la
+> importación completa, hasta que llegue la instancia en la base de datos
+> y luego recuperes las tareas y no deberían estar los milestones. Y
+> deberías encontrar en project.milestones los milestones de Tj3. [...]
+> Si, exacto. Los milestones son milestones, no son tareas."
+
+### Discusión de diseño
+
+- La sospecha inicial (el heurístico `_find_milestone_task_ids`, regex sin
+  brace-matching real) resultó no ser el problema: se reprodujo contra el
+  `.tjp` real de producción (152 tareas, escenarios `plan/withia/noai`,
+  dependencias cruzadas entre ejes) corriendo el pipeline completo
+  —`action_analyze` contra el microservicio TJ3 real (`tj3-ms`) y
+  `action_import` contra una base de datos real— y la detección/matching
+  funcionaba correctamente en el 100% de los 31 milestones del archivo.
+- El problema real era de diseño en `action_import`: toda fila del CSV
+  creaba siempre un `project.task`, y si `is_milestone` era `True`
+  *además* creaba un `project.milestone` y lo enlazaba vía
+  `task.milestone_id`. Un milestone terminaba siendo tarea y milestone a
+  la vez — visible como tarea regular en cualquier vista de Tareas.
+- Confirmado con el usuario: un milestone del `.tjp` debe crear
+  únicamente un `project.milestone`, nunca un `project.task`. Se agregó
+  un `continue` temprano en el loop de `action_import` para las filas
+  `is_milestone` (no se registran en `bsi_task_id`, así que ninguna
+  subtarea puede terminar parentada bajo un milestone).
+- Efecto secundario documentado (no resuelto en esta versión): como el
+  milestone ya no tiene ningún `project.task` propio,
+  `project.milestone.task_ids` queda siempre vacío para milestones
+  importados por este wizard, y `_tjp_milestone_block` (lado export) no
+  los va a re-emitir en un `.tjp` regenerado (corta temprano si
+  `task_ids` está vacío). Para que sobrevivan a un reschedule habría que
+  parsear `depends` en el import (gap ya conocido, tampoco resuelto acá)
+  y enlazar el milestone a esas tareas reales.
+
+### Arreglado
+
+- `insight_import_wizard.py` (`action_import`): una fila `is_milestone`
+  crea solo un `project.milestone`; ya no crea también un `project.task`
+  con el mismo nombre enlazado vía `milestone_id`.
+
+### Tests
+
+- `tests/test_import_wizard.py`: `test_milestone_flagged_row_creates_milestone_not_task`,
+  `test_milestone_row_does_not_break_sibling_bsi_hierarchy` (nuevo — un
+  milestone entre dos hermanos no debe romper el `parent_id` de los que
+  vienen después) y `test_full_pipeline_milestone_nested_under_eje_creates_only_milestone`
+  (reproducción end-to-end con la forma real del `.tjp` de producción:
+  `depends` antes de `milestone`, `note` final, anidado bajo un "eje" con
+  4 tareas hermanas).
+
+---
+
 ## [17.0.9.5.0] - 2026-07-08
 
 ### Prompt

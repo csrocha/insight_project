@@ -83,6 +83,82 @@ class TestImportWizardParsing(TransactionCase):
         self.assertFalse(by_bsi['1']['is_milestone'])
         self.assertTrue(by_bsi['2']['is_milestone'])
 
+    # -- Reproduce: milestone declared inside a parent "eje" with siblings -----
+
+    _EJE8_TJP = (
+        'task eje8 "Eje VIII: Ecosistema de Micrositios y Portal FOP" {\n'
+        '\n'
+        '  task t8_1 "Portal FOP Central (identidad digital + SSO)" {\n'
+        '    depends !!eje7.m7_sso, !!eje6.m6_bench\n'
+        '    effort 6w\n'
+        '    allocate csr { alternative noel }\n'
+        '  }\n'
+        '\n'
+        '  task t8_2 "Micrositio Comunidad FOP" {\n'
+        '    depends !t8_1, !!eje6.m6_fin\n'
+        '    effort 4w\n'
+        '    allocate csr { alternative noel }\n'
+        '  }\n'
+        '\n'
+        '  task t8_3 "Framework de micrositios para terceros" {\n'
+        '    depends !t8_1\n'
+        '    effort 3w\n'
+        '    allocate noel { alternative csr }\n'
+        '  }\n'
+        '\n'
+        '  task t8_4 "Testing integral del ecosistema" {\n'
+        '    depends !t8_2, !t8_3\n'
+        '    effort 1w\n'
+        '    allocate noel\n'
+        '    allocate csr\n'
+        '  }\n'
+        '\n'
+        '  task m8_portal "Portal FOP Central en producción" {\n'
+        '    depends !t8_1\n'
+        '    milestone\n'
+        '    note "Entregable: Portal institucional FOP con SSO en producción"\n'
+        '  }\n'
+        '\n'
+        '  task m8_comunidad "Micrositio Comunidad FOP en producción" {\n'
+        '    depends !t8_2\n'
+        '    milestone\n'
+        '  }\n'
+        '}\n'
+    )
+
+    # Mimics TJ3's own taskreport CSV: "id" is the dotted path from the
+    # project root down to each task's own declared id (see the real
+    # GanttChart.html tooltip: "<b>ID:</b> eje8.m8_portal").
+    _EJE8_CSV = (
+        '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness";"Complete"\n'
+        '"eje8";"8";"Eje VIII";"2027-01-01";"2027-12-24";"0.0d";"258.0d";"";"0";"0%"\n'
+        '"eje8.t8_1";"8.1";"Portal FOP Central (identidad digital + SSO)";"2027-01-01";"2027-02-11";"30.0d";"30.0d";"Cristian S. Rocha (csr)";"0";"0%"\n'
+        '"eje8.t8_2";"8.2";"Micrositio Comunidad FOP";"2027-02-12";"2027-03-11";"20.0d";"20.0d";"Cristian S. Rocha (csr)";"0";"0%"\n'
+        '"eje8.t8_3";"8.3";"Framework de micrositios para terceros";"2027-02-12";"2027-03-04";"15.0d";"15.0d";"Noel (noel)";"0";"0%"\n'
+        '"eje8.t8_4";"8.4";"Testing integral del ecosistema";"2027-03-12";"2027-03-18";"5.0d";"5.0d";"Noel (noel)";"0";"0%"\n'
+        '"eje8.m8_portal";"8.5";"Portal FOP Central en producción";"2027-02-11";"2027-02-11";"0.0d";"0.0d";"";"0";"0%"\n'
+        '"eje8.m8_comunidad";"8.6";"Micrositio Comunidad FOP en producción";"2027-03-11";"2027-03-11";"0.0d";"0.0d";"";"0";"0%"\n'
+    )
+
+    def test_find_milestone_task_ids_detects_id_with_underscore_nested_under_eje(self):
+        """Reproduces the reported bug shape: a `m<eje>_<name>` milestone
+        task, declared with `depends` before `milestone` and a trailing
+        `note`, nested inside a parent "eje" task alongside several
+        sibling non-milestone tasks."""
+        ids = InsightImportWizard._find_milestone_task_ids(self._EJE8_TJP)
+        self.assertEqual(ids, {'m8_portal', 'm8_comunidad'})
+
+    def test_parse_csv_preview_flags_milestone_with_dotted_nested_id(self):
+        """The CSV 'id' column for a nested task is a dotted path
+        (eje8.m8_portal); only the leaf must be matched against the ids
+        found by _find_milestone_task_ids."""
+        milestone_ids = InsightImportWizard._find_milestone_task_ids(self._EJE8_TJP)
+        tasks, _ = InsightImportWizard._parse_csv_preview(self._EJE8_CSV, milestone_ids)
+        by_bsi = {t['bsi']: t for t in tasks}
+        self.assertFalse(by_bsi['8.1']['is_milestone'], 't8_1 is a regular task')
+        self.assertTrue(by_bsi['8.5']['is_milestone'], 'm8_portal must be flagged as milestone')
+        self.assertTrue(by_bsi['8.6']['is_milestone'], 'm8_comunidad must be flagged as milestone')
+
     def _stages(self):
         return object(), object(), object()  # refine, backlog, done
 
@@ -300,11 +376,10 @@ class TestImportWizardAction(TransactionCase):
 
     # -- Milestone linking -------------------------------------------------
 
-    def test_milestone_flagged_task_gets_linked_to_new_milestone(self):
-        """A task detected as a TJP `milestone` (see _find_milestone_task_ids)
-        must not just be created as a bare 0-effort task: it must be linked
-        to a real project.milestone, same as our own tjp export/import
-        round-trip does."""
+    def test_milestone_flagged_row_creates_milestone_not_task(self):
+        """A row detected as a TJP `milestone` (see _find_milestone_task_ids)
+        must become a project.milestone only — milestones are milestones,
+        not tasks, so no project.task with that name should exist."""
         wizard = self._make_wizard(tasks=[
             {'bsi': '1', 'name': 'Go live', 'effort': '0.0d',
              'resources': [], 'complete': '0%', 'is_milestone': True},
@@ -314,8 +389,12 @@ class TestImportWizardAction(TransactionCase):
         task = self.env['project.task'].search([
             ('project_id', '=', self.project.id), ('name', '=', 'Go live')
         ], limit=1)
-        self.assertTrue(task.milestone_id, "Task should be linked to a project.milestone")
-        self.assertEqual(task.milestone_id.name, 'Go live')
+        self.assertFalse(task, "Milestone rows must not create a project.task")
+
+        milestone = self.env['project.milestone'].search([
+            ('project_id', '=', self.project.id), ('name', '=', 'Go live')
+        ], limit=1)
+        self.assertTrue(milestone, "Milestone row should create a project.milestone")
         self.assertTrue(self.project.allow_milestones)
 
     def test_non_milestone_task_has_no_milestone_link(self):
@@ -328,4 +407,73 @@ class TestImportWizardAction(TransactionCase):
         task = self.env['project.task'].search([
             ('project_id', '=', self.project.id), ('name', '=', 'Regular Task')
         ], limit=1)
+        self.assertTrue(task)
         self.assertFalse(task.milestone_id)
+
+    def test_milestone_row_does_not_break_sibling_bsi_hierarchy(self):
+        """A milestone row sitting between two ordinary sibling rows (by
+        bsi order) must not disrupt parent_id resolution for its siblings
+        — it simply contributes nothing to bsi_task_id."""
+        wizard = self._make_wizard(tasks=[
+            {'bsi': '1',   'name': 'Phase 1',   'effort': '10.0d', 'resources': [], 'complete': '0%'},
+            {'bsi': '1.1', 'name': 'Subtask A', 'effort': '5.0d',  'resources': [], 'complete': '0%'},
+            {'bsi': '1.2', 'name': 'Milestone A', 'effort': '0.0d',
+             'resources': [], 'complete': '0%', 'is_milestone': True},
+            {'bsi': '1.3', 'name': 'Subtask B', 'effort': '5.0d',  'resources': [], 'complete': '0%'},
+        ])
+        wizard.action_import()
+
+        parent = self.env['project.task'].search([
+            ('project_id', '=', self.project.id), ('name', '=', 'Phase 1')
+        ], limit=1)
+        subtask_b = self.env['project.task'].search([
+            ('project_id', '=', self.project.id), ('name', '=', 'Subtask B')
+        ], limit=1)
+        self.assertEqual(subtask_b.parent_id, parent)
+        self.assertFalse(self.env['project.task'].search([
+            ('project_id', '=', self.project.id), ('name', '=', 'Milestone A')
+        ]))
+
+    def test_full_pipeline_milestone_nested_under_eje_creates_only_milestone(self):
+        """End-to-end reproduction of the reported bug shape: a hand-authored
+        .tjp with `m8_portal`/`m8_comunidad` tasks (depends before milestone,
+        trailing note, nested inside "eje8" alongside 4 sibling tasks) must
+        import as project.milestone records only — no project.task with
+        their name.
+
+        Goes through the *real* parsing helpers (_find_milestone_task_ids
+        + _parse_csv_preview), not a hand-crafted task dict with
+        is_milestone already set — that's what the other milestone tests
+        here do, and it never exercises the detection/matching step where
+        this bug would actually live.
+        """
+        milestone_ids = InsightImportWizard._find_milestone_task_ids(
+            TestImportWizardParsing._EJE8_TJP
+        )
+        tasks, _resource_ids = InsightImportWizard._parse_csv_preview(
+            TestImportWizardParsing._EJE8_CSV, milestone_ids
+        )
+        wizard = self._make_wizard(tasks=tasks)
+        wizard.action_import()
+
+        for name in ('Portal FOP Central en producción', 'Micrositio Comunidad FOP en producción'):
+            self.assertFalse(
+                self.env['project.task'].search([
+                    ('project_id', '=', self.project.id), ('name', '=', name),
+                ]),
+                f'"{name}" is a milestone — it must not create a project.task',
+            )
+            self.assertTrue(
+                self.env['project.milestone'].search([
+                    ('project_id', '=', self.project.id), ('name', '=', name),
+                ]),
+                f'"{name}" should exist as a project.milestone',
+            )
+
+        # Regular sibling tasks in the same "eje" must still import normally.
+        t8_1 = self.env['project.task'].search([
+            ('project_id', '=', self.project.id),
+            ('name', '=', 'Portal FOP Central (identidad digital + SSO)'),
+        ], limit=1)
+        self.assertTrue(t8_1)
+        self.assertFalse(t8_1.milestone_id)
