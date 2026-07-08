@@ -13,6 +13,7 @@ class InsightTaskSchedule(models.Model):
     end_scheduled = fields.Datetime()
     effort_days = fields.Float()
     duration_days = fields.Float()
+    cost = fields.Float(help='Costo TJ3 de la tarea (columna "cost" del taskreport).')
     is_critical_path = fields.Boolean()
     bsi = fields.Char()
     resource_ids = fields.Many2many(

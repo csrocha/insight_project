@@ -8,6 +8,10 @@ summary points, a resource with no linked hr.employee, and a root scenario
 with nested alternates — so the generator's textual output stays pinned
 even though the project content used here is synthetic.
 """
+from datetime import date
+from unittest.mock import patch
+
+from odoo import fields
 from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase
 
@@ -24,12 +28,29 @@ class TestTjpProjectHeader(TransactionCase):
         })
 
     def test_project_id_and_dates_in_header(self):
-        lines = self.project._tjp_project_header([])
+        with patch.object(fields.Date, 'today', return_value=date(2026, 6, 29)):
+            lines = self.project._tjp_project_header([])
         self.assertTrue(
             lines[0].startswith(f'project p{self.project.id} "IT Plan" 2026-06-29 - '),
             lines[0],
         )
         self.assertIn('  timezone "America/Argentina/Buenos_Aires"', lines)
+        self.assertIn('  now 2026-06-29', lines)
+
+    def test_now_reflects_todays_date_not_pinned_to_date_start(self):
+        """`now` debe reflejar la fecha real de la corrida (para que los
+        `booking` protejan el pasado correctamente en cada reschedule),
+        no quedar pinneado al date_start fijo del proyecto."""
+        with patch.object(fields.Date, 'today', return_value=date(2026, 7, 15)):
+            lines = self.project._tjp_project_header([])
+        self.assertIn('  now 2026-07-15', lines)
+
+    def test_now_never_before_date_start(self):
+        """Si el proyecto todavía no arrancó (date_start en el futuro), `now`
+        no puede quedar antes de esa fecha — no hay bookings pasados que
+        proteger todavía."""
+        with patch.object(fields.Date, 'today', return_value=date(2026, 1, 1)):
+            lines = self.project._tjp_project_header([])
         self.assertIn('  now 2026-06-29', lines)
 
     def test_single_scenario_when_none_defined(self):
@@ -245,6 +266,7 @@ class TestTjpTaskBlock(TransactionCase):
         lines = self.project._tjp_task_block(task)
         self.assertEqual(lines, [
             f'task t{task.id} "Hito sin esfuerzo" {{',
+            '  chargeset cost',
             '}',
             '',
         ])
@@ -294,6 +316,108 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn('  scenarios plan', text)
         self.assertIn('taskreport "schedule_noai" {', text)
         self.assertIn('  scenarios noai', text)
+
+
+class TestTjpBookings(TransactionCase):
+    """`_tjp_bookings` exporta el trabajo ya imputado (timesheets) de una
+    tarea como `booking`, para que TJ3 descuente ese esfuerzo del `effort`
+    total en cada reschedule (ver models/project_project.py)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Bookings Project',
+            'is_tj_enabled': True,
+            'date_start': '2026-06-29',
+        })
+        cls.analytic_plan = cls.env['account.analytic.plan'].create({
+            'name': 'Bookings Test Plan',
+        })
+        cls.analytic_account = cls.env['account.analytic.account'].create({
+            'name': 'Bookings Project - Analytic',
+            'plan_id': cls.analytic_plan.id,
+        })
+        cls.project.analytic_account_id = cls.analytic_account.id
+        cls.user = cls.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Timesheet Resource',
+            'login': 'timesheet_resource@insight.test',
+            'email': 'timesheet_resource@insight.test',
+            'groups_id': [(4, cls.env.ref('base.group_user').id)],
+        })
+        cls.employee = cls.env['hr.employee'].create({
+            'name': 'Timesheet Resource',
+            'user_id': cls.user.id,
+        })
+
+    def _task(self, **vals):
+        vals.setdefault('project_id', self.project.id)
+        return self.env['project.task'].create(vals)
+
+    def _log_time(self, task, emp_date, hours):
+        return self.env['account.analytic.line'].create({
+            'name': '/',
+            'account_id': self.analytic_account.id,
+            'task_id': task.id,
+            'employee_id': self.employee.id,
+            'date': emp_date,
+            'unit_amount': hours,
+        })
+
+    def test_booking_emitted_for_past_timesheet(self):
+        task = self._task(name='Con horas', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 3.5)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +3.50h', lines)
+
+    def test_bookings_for_same_user_and_day_are_summed(self):
+        task = self._task(name='Dos líneas mismo día', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 2.0)
+        self._log_time(task, '2026-06-30', 1.5)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +3.50h', lines)
+        self.assertEqual(
+            sum(1 for l in lines if l.strip().startswith('booking')), 1,
+            'Dos timesheets del mismo usuario/día deben colapsar en un solo booking',
+        )
+
+    def test_booking_excludes_lines_after_now_date(self):
+        task = self._task(name='Horas futuras', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-07-02', 4.0)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertFalse(any(l.strip().startswith('booking') for l in lines))
+
+    def test_project_users_includes_timesheet_only_user(self):
+        """Alguien que imputó horas en una tarea sin estar en resource_pool_ids
+        ni en user_ids igual necesita su bloque `resource` — si no, su
+        `booking` referenciaría un recurso no declarado y TJ3 fallaría al
+        parsear el .tjp."""
+        helper_user = self.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Ayuda Puntual',
+            'login': 'ayuda_puntual@insight.test',
+            'email': 'ayuda_puntual@insight.test',
+            'groups_id': [(4, self.env.ref('base.group_user').id)],
+        })
+        helper_employee = self.env['hr.employee'].create({
+            'name': 'Ayuda Puntual', 'user_id': helper_user.id,
+        })
+        task = self._task(name='Con ayuda puntual', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self.env['account.analytic.line'].create({
+            'name': '/',
+            'account_id': self.analytic_account.id,
+            'task_id': task.id,
+            'employee_id': helper_employee.id,
+            'date': '2026-06-30',
+            'unit_amount': 3.0,
+        })
+        project_users = self.project._tj_project_users()
+        self.assertIn(helper_user, project_users)
+
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        text = '\n'.join(lines)
+        self.assertIn(f'  booking u{helper_user.id} 2026-06-30 +3.00h', text)
+        # No se lo agrega como candidato de asignación futura de la tarea.
+        self.assertNotIn(f'allocate u{helper_user.id}', text)
 
 
 class TestTjpMilestoneBlock(TransactionCase):

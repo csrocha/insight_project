@@ -61,6 +61,23 @@ class ProjectProject(models.Model):
              'allocate) para elegir un recurso entre el candidato principal '
              'y sus alternativas cuando una tarea tiene más de un candidato.',
     )
+    scenario_selection_strategy = fields.Selection(
+        [
+            ('manual', 'Mantener selección manual'),
+            ('min_cost', 'Menor costo'),
+            ('min_duration', 'Menor duración'),
+            ('min_resources', 'Menor pico de recursos'),
+            ('weighted_score', 'Score ponderado (multiobjetivo)'),
+        ],
+        string='Estrategia de selección de escenario', default='manual',
+        help='Cómo elegir automáticamente, después de cada corrida de schedule, '
+             'cuál escenario pasa a ser el baseline (el que sincroniza con el '
+             'Gantt nativo de Odoo). "Mantener selección manual" preserva el '
+             'comportamiento de siempre: nadie cambia is_baseline salvo el usuario.',
+    )
+    scenario_weight_cost = fields.Float(string='Peso: costo', default=1.0)
+    scenario_weight_duration = fields.Float(string='Peso: duración', default=1.0)
+    scenario_weight_resources = fields.Float(string='Peso: recursos', default=1.0)
 
     # ── Public actions ────────────────────────────────────────────────────────
 
@@ -280,8 +297,10 @@ class ProjectProject(models.Model):
     def _generate_tjp(self):
         self.ensure_one()
         scenarios = self.scenario_ids  # snapshot once — both header and reports must agree
+        now_date = self._tjp_now_date()
         lines = []
-        lines += self._tjp_project_header(scenarios)
+        lines += self._tjp_project_header(scenarios, now_date)
+        lines += self._tjp_cost_account()
         for user in self._tj_project_users():
             lines += self._tjp_resource_block(user)
         for scenario in scenarios:
@@ -289,13 +308,24 @@ class ProjectProject(models.Model):
         for task in self.task_ids.filtered(
             lambda t: not t.parent_id
         ).sorted('sequence'):
-            lines += self._tjp_task_block(task, depth=0)
+            lines += self._tjp_task_block(task, depth=0, now_date=now_date)
         for milestone in self.milestone_ids:
             lines += self._tjp_milestone_block(milestone)
         lines += self._tjp_reports(scenarios)
         return '\n'.join(lines)
 
-    def _tjp_project_header(self, scenarios=None):
+    def _tjp_now_date(self):
+        """Referencia real de 'hoy' para el scheduler — a diferencia del
+        `start` del proyecto (fijo, `date_start`), esta fecha debe avanzar en
+        cada corrida para que los `booking` (ver _tjp_bookings) protejan
+        correctamente el trabajo ya realizado. Nunca antes de `date_start`:
+        si el proyecto todavía no arrancó, no puede haber bookings pasados
+        que proteger."""
+        self.ensure_one()
+        start = self.date_start or fields.Date.today()
+        return max(fields.Date.today(), start)
+
+    def _tjp_project_header(self, scenarios=None, now_date=None):
         if scenarios is None:
             scenarios = self.scenario_ids
         proj_id = f'p{self.id}'
@@ -303,11 +333,15 @@ class ProjectProject(models.Model):
         start = self.date_start or fields.Date.today()
         end = self._tjp_project_end_date(start)
         tz = self.tj_timezone or 'UTC'
+        if now_date is None:
+            now_date = self._tjp_now_date()
 
+        currency = (self.company_id.currency_id.name if self.company_id else False) or 'USD'
         lines = [
             f'project {proj_id} "{name}" {start} - {end} {{',
             f'  timezone "{tz}"',
-            f'  now {start}',
+            f'  now {now_date}',
+            f'  currency "{currency}"',
         ]
         if not scenarios:
             lines.append('  scenario plan "Plan"')
@@ -329,6 +363,14 @@ class ProjectProject(models.Model):
                 lines.append(f'  scenario {root_id} "{root_name}"')
         lines += ['}', '']
         return lines
+
+    _TJP_COST_ACCOUNT_ID = 'cost'
+
+    def _tjp_cost_account(self):
+        """Cuenta de costo declarada una sola vez para que la columna 'cost' de
+        los reportes tenga algo contra qué acumular (ver _tjp_task_block, que
+        le asigna 'chargeset' a cada tarea raíz)."""
+        return [f'account {self._TJP_COST_ACCOUNT_ID} "Costo"', '']
 
     def _tjp_project_end_date(self, start):
         if self.date and self.date > start:
@@ -360,11 +402,18 @@ class ProjectProject(models.Model):
         """res.users deduplicado a partir del pool de candidatos efectivo de
         cada tarea del proyecto (resource_pool_ids si está definido, si no
         user_ids). Cualquier candidato potencial de una tarea necesita su
-        propio bloque `resource`, no solo quien termine asignado."""
+        propio bloque `resource`, no solo quien termine asignado.
+
+        También se incluye a quien haya imputado timesheets en la tarea aunque
+        no esté en ese pool: su `booking` (ver _tjp_bookings) referenciaría un
+        recurso no declarado y TJ3 fallaría al parsear el .tjp. Esto no lo
+        convierte en candidato para trabajo futuro — _tjp_allocate sigue
+        leyendo solo resource_pool_ids/user_ids."""
         self.ensure_one()
         users = self.env['res.users']
         for task in self.task_ids:
             users |= task.resource_pool_ids or task.user_ids
+            users |= task.timesheet_ids.mapped('user_id')
         return users
 
     def _tjp_resource_block(self, user):
@@ -378,6 +427,9 @@ class ProjectProject(models.Model):
 
         if employee and employee.tj_base_efficiency and employee.tj_base_efficiency != 1.0:
             lines.append(f'  efficiency {employee.tj_base_efficiency:.2f}')
+
+        if employee and employee.tj_daily_rate:
+            lines.append(f'  rate {employee.tj_daily_rate:.2f}')
 
         lines += self._tjp_hr_schedule(employee)
 
@@ -441,12 +493,18 @@ class ProjectProject(models.Model):
             ]
         return lines
 
-    def _tjp_task_block(self, task, depth=0):
+    def _tjp_task_block(self, task, depth=0, now_date=None):
+        if now_date is None:
+            now_date = self._tjp_now_date()
         t_id = self._tjp_task_id(task)
         t_name = (task.name or 'Task').replace('"', "'")
         ind = '  ' * depth
 
         lines = [f'{ind}task {t_id} "{t_name}" {{']
+        if depth == 0:
+            # chargeset se hereda a las subtareas; alcanza con declararlo una
+            # sola vez en la tarea raíz para que 'cost' se acumule correctamente.
+            lines.append(f'{ind}  chargeset {self._TJP_COST_ACCOUNT_ID}')
 
         child_tasks = task.child_ids.filtered(
             lambda t: t.project_id == self
@@ -464,6 +522,8 @@ class ProjectProject(models.Model):
                         lines.append(f'{ind}  effort {effort_d:.2f}d')
                     for al in allocate_lines:
                         lines.append(f'{ind}  {al}')
+                    for bl in self._tjp_bookings(task, now_date):
+                        lines.append(f'{ind}  {bl}')
                 else:
                     # No resource assigned → use duration (TJ3 needs resource for effort)
                     duration_d = task.allocated_hours / 8.0
@@ -477,10 +537,32 @@ class ProjectProject(models.Model):
 
         # Subtasks (recursive)
         for child in child_tasks:
-            lines += self._tjp_task_block(child, depth=depth + 1)
+            lines += self._tjp_task_block(child, depth=depth + 1, now_date=now_date)
 
         lines.append(f'{ind}}}')
         lines.append('')
+        return lines
+
+    def _tjp_bookings(self, task, now_date):
+        """Bloques `booking` con el trabajo ya imputado (timesheets) en esta
+        tarea, agrupado por (usuario, día). Solo se consideran días hasta
+        `now_date` — TJ3 no acepta bookings en el futuro respecto a `now`.
+        Con al menos un booking, TJ3 activa "projection mode" y resta ese
+        trabajo del `effort` total al planificar lo que falta."""
+        hours_by_user_date = defaultdict(float)
+        for line in task.timesheet_ids:
+            if not line.user_id or not line.date or line.date > now_date:
+                continue
+            hours_by_user_date[(line.user_id, line.date)] += line.unit_amount
+
+        lines = []
+        for (user, date), hours in sorted(
+            hours_by_user_date.items(), key=lambda kv: (kv[0][1], kv[0][0].id)
+        ):
+            if hours <= 0:
+                continue
+            res_id = self._tjp_resource_id(user.partner_id.id)
+            lines.append(f'booking {res_id} {date} +{hours:.2f}h')
         return lines
 
     def _tjp_milestone_block(self, milestone):
@@ -532,7 +614,7 @@ class ProjectProject(models.Model):
             return [
                 'taskreport "schedule_plan" {',
                 '  formats csv',
-                '  columns id, bsi, name, start, end, effort, duration, resources, criticalness',
+                '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness',
                 '  scenarios plan',
                 '}',
                 '',
@@ -543,7 +625,7 @@ class ProjectProject(models.Model):
             lines += [
                 f'taskreport "schedule_{sc_id}" {{',
                 '  formats csv',
-                '  columns id, bsi, name, start, end, effort, duration, resources, criticalness',
+                '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness',
                 f'  scenarios {sc_id}',
                 '}',
                 '',
@@ -611,8 +693,168 @@ class ProjectProject(models.Model):
                 continue
             self._import_scenario_csv(csv_content, scenario)
             imported += 1
+        self._apply_selection_strategy()
         self._sync_gantt_dates()
         return imported
+
+    # ── Selección de escenario ───────────────────────────────────────────────
+
+    def _tjp_leaf_task_ids(self):
+        """IDs de project.task sin subtareas dentro de este proyecto — las
+        únicas que reciben 'effort'/'allocate' reales en el .tjp (ver
+        _tjp_task_block). Las filas de sus tareas padre en el reporte son un
+        rollup de TJ3, no una asignación de recurso propia, así que no deben
+        contarse al medir concurrencia de recursos."""
+        return {
+            t.id for t in self.task_ids
+            if not t.child_ids.filtered(lambda c: c.project_id == self)
+        }
+
+    def _peak_concurrent_resources(self, scenario, leaf_task_ids):
+        """Pico de recursos distintos trabajando en simultáneo en este
+        escenario: sweep-line sobre los intervalos [start, end) de sus tareas
+        hoja (cada una asignada a un único recurso, ver _tjp_allocate). Se
+        usa un intervalo semiabierto para que una tarea que termina justo
+        cuando otra empieza no cuente como concurrente."""
+        events = []
+        for schedule in scenario.schedule_ids:
+            if schedule.task_id.id not in leaf_task_ids:
+                continue
+            if not schedule.start_scheduled or not schedule.end_scheduled:
+                continue
+            for _user in schedule.resource_ids:
+                events.append((schedule.start_scheduled, 1))
+                events.append((schedule.end_scheduled, -1))
+        if not events:
+            return 0
+        events.sort(key=lambda e: (e[0], e[1]))  # end (-1) antes que start (+1) al mismo instante
+        current = peak = 0
+        for _when, delta in events:
+            current += delta
+            peak = max(peak, current)
+        return peak
+
+    def _compute_scenario_aggregates(self, scenarios):
+        """Recalcula total_cost / computed_end_date / peak_resources de cada
+        escenario en base a sus insight.task.schedule vigentes."""
+        root_task_ids = set(self.task_ids.filtered(lambda t: not t.parent_id).ids)
+        leaf_task_ids = self._tjp_leaf_task_ids()
+        for scenario in scenarios:
+            root_schedules = scenario.schedule_ids.filtered(
+                lambda s: s.task_id.id in root_task_ids
+            )
+            ends = [e for e in scenario.schedule_ids.mapped('end_scheduled') if e]
+            scenario.write({
+                'total_cost': sum(root_schedules.mapped('cost')),
+                'computed_end_date': max(ends) if ends else False,
+                'peak_resources': self._peak_concurrent_resources(scenario, leaf_task_ids),
+            })
+
+    def _scenario_metrics(self, candidates):
+        """{scenario.id: valor} según la estrategia activa — menor es mejor
+        en todos los casos, incluida la ponderada."""
+        strategy = self.scenario_selection_strategy
+        if strategy == 'min_cost':
+            return {s.id: round(s.total_cost, 2) for s in candidates}
+        if strategy == 'min_duration':
+            return {s.id: (s.computed_end_date or datetime.max) for s in candidates}
+        if strategy == 'min_resources':
+            return {s.id: s.peak_resources for s in candidates}
+        return self._weighted_scenario_scores(candidates)
+
+    def _weighted_scenario_scores(self, candidates):
+        """Normaliza costo/duración/pico de recursos (min-max, 0=mejor,
+        1=peor) entre `candidates` y combina con los pesos configurados en el
+        proyecto. Guarda selection_score en cada escenario para que quede
+        visible en la UI por qué ganó."""
+        def _normalized(raw):
+            lo, hi = min(raw.values()), max(raw.values())
+            span = hi - lo
+            if not span:
+                return {k: 0.0 for k in raw}
+            return {k: (v - lo) / span for k, v in raw.items()}
+
+        cost_n = _normalized({s.id: s.total_cost for s in candidates})
+        duration_n = _normalized({
+            s.id: s.computed_end_date.timestamp() if s.computed_end_date else 0.0
+            for s in candidates
+        })
+        resources_n = _normalized({s.id: float(s.peak_resources) for s in candidates})
+
+        scores = {}
+        for s in candidates:
+            score = (
+                self.scenario_weight_cost * cost_n[s.id]
+                + self.scenario_weight_duration * duration_n[s.id]
+                + self.scenario_weight_resources * resources_n[s.id]
+            )
+            scores[s.id] = score
+            s.selection_score = score
+        return scores
+
+    def _apply_selection_strategy(self):
+        """Recalcula los agregados de cada escenario y, según
+        scenario_selection_strategy, decide cuál pasa a ser is_baseline —
+        dejando la decisión y el motivo en el chatter, porque a partir de acá
+        is_baseline puede cambiar sin que nadie lo haya tocado a mano."""
+        self.ensure_one()
+        scenarios = self.scenario_ids
+        if not scenarios:
+            return
+        self._compute_scenario_aggregates(scenarios)
+        scenarios.write({'selection_score': 0.0})
+        if self.scenario_selection_strategy == 'manual' or len(scenarios) == 1:
+            return
+
+        candidates = scenarios
+        missed_deadline = False
+        if self.date:
+            within_deadline = scenarios.filtered(
+                lambda s: not s.computed_end_date or s.computed_end_date.date() <= self.date
+            )
+            if within_deadline:
+                candidates = within_deadline
+            else:
+                missed_deadline = True
+
+        metric_by_scenario = self._scenario_metrics(candidates)
+        best_value = min(metric_by_scenario.values())
+        tied = candidates.filtered(lambda s: metric_by_scenario[s.id] == best_value)
+
+        current_baseline = scenarios.filtered('is_baseline')
+        winner = (
+            current_baseline[:1]
+            if current_baseline and current_baseline in tied
+            else tied[:1]
+        )
+
+        scenarios.write({'is_baseline': False})
+        winner.is_baseline = True
+        self._post_selection_message(scenarios, winner, candidates, missed_deadline)
+
+    def _post_selection_message(self, scenarios, winner, candidates, missed_deadline):
+        strategy_label = dict(
+            self._fields['scenario_selection_strategy'].selection
+        )[self.scenario_selection_strategy]
+        lines = [_('Selección automática de escenario — estrategia: %s') % strategy_label]
+        if missed_deadline:
+            lines.append(_(
+                'Ningún escenario cumple la fecha pactada (%s); se compararon todos igual.'
+            ) % self.date)
+        for sc in scenarios:
+            marker = '→' if sc.id == winner.id else '·'
+            note = ''
+            if sc not in candidates and not missed_deadline:
+                note = _(' (excede la fecha pactada)')
+            end_txt = str(sc.computed_end_date) if sc.computed_end_date else '-'
+            lines.append(_(
+                '%(marker)s %(name)s — costo %(cost).2f, fin %(end)s, '
+                'pico de recursos %(peak)d%(note)s'
+            ) % {
+                'marker': marker, 'name': sc.name, 'cost': sc.total_cost,
+                'end': end_txt, 'peak': sc.peak_resources, 'note': note,
+            })
+        self.message_post(body='<br/>'.join(lines))
 
     def _sync_gantt_dates(self):
         """Push the baseline scenario's schedule into the standard Gantt
@@ -668,6 +910,7 @@ class ProjectProject(models.Model):
                     'end_scheduled': self._parse_tj_datetime(norm.get('end', ''), tz_name),
                     'effort_days': self._parse_tj_duration(norm.get('effort', '')),
                     'duration_days': self._parse_tj_duration(norm.get('duration', '')),
+                    'cost': self._parse_tj_cost(norm.get('cost', '')),
                     'is_critical_path': self._parse_tj_criticalness(norm.get('criticalness', '')),
                     'bsi': norm.get('bsi', ''),
                     'resource_ids': [(6, 0, self._parse_tj_resource_ids(norm.get('resources', '')))],
@@ -737,6 +980,17 @@ class ProjectProject(models.Model):
                 return float(v[:-1]) * 5.0
             return float(v)
         except (ValueError, AttributeError):
+            return 0.0
+
+    @staticmethod
+    def _parse_tj_cost(value):
+        """Convert TJ3 'cost' column text (e.g. '1234.00', '$1,234.00') to float."""
+        if not value:
+            return 0.0
+        cleaned = re.sub(r'[^0-9.\-]', '', value.strip())
+        try:
+            return float(cleaned) if cleaned else 0.0
+        except ValueError:
             return 0.0
 
     @staticmethod

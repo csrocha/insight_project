@@ -9,6 +9,155 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.4.0] - 2026-07-07
+
+### Prompt
+
+> "Quiero aprovechar los escenarios de tjp3. Debemos elegir el escenario que
+> sea más eficiente, en dinero, tiempo u otra estrategia, y esto tiene que
+> ocurrir luego de ejecutar el scheduler. Entonces el proyecto tiene que
+> tener una estrategia de selección del mejor escenario. [...] ¿Tiene
+> sentido una opción multiobjetivo? [...] ¿taskjuggler puede calcular bien
+> esas variables? ¿Y qué otras variables podemos usar?"
+>
+> Alcance confirmado por el usuario: implementar todo junto (incluida la
+> estrategia ponderada/multiobjetivo desde el arranque), medir "uso de
+> recursos" como pico de concurrencia (no headcount ni horas-persona), y
+> aplicar la selección automáticamente al final de cada corrida de schedule
+> — dejando la decisión y el motivo en el chatter del proyecto.
+
+### Discusión de diseño
+
+- Verificado contra el manual oficial de TJ3: `insight.scenario` solo variaba
+  entre sí por eficiencia de recursos (`supplement resource ... efficiency`).
+  TJ3 permite en realidad overridear cualquier atributo scenario-specific
+  (esfuerzo, allocate, prioridad, etc.) — es una limitación autoimpuesta del
+  addon, no de TJ3 — pero no hizo falta tocar eso: alcanza con comparar los
+  resultados que TJ3 ya calcula por escenario.
+- No existía ningún dato de costo en el addon. `tj_allocation_selection` ya
+  ofrecía la opción `mincost` pero era letra muerta: nunca se emitía ninguna
+  tarifa a TJ3. Según el manual, `rate` en un recurso es el **costo diario**
+  (no horario); para que la columna de reporte `cost` calcule algo hace falta
+  además declarar un `account` de costo y asignar `chargeset` a las tareas
+  (se declaró una sola vez en cada tarea raíz — se hereda a las subtareas) y
+  un `currency` a nivel proyecto.
+- "Uso de recursos" se definió como **pico de concurrencia** (máxima
+  cantidad de recursos distintos trabajando en simultáneo en algún momento
+  del proyecto), no headcount total ni horas-persona acumuladas — más fiel a
+  "cuánta gente necesito disponible a la vez". Se calcula 100% en Odoo
+  (sweep-line sobre `insight.task.schedule`), sin pedirle nada nuevo a TJ3,
+  y **solo sobre tareas hoja**: las filas de tareas padre en el reporte son
+  un rollup de TJ3, incluirlas duplicaría/infllaría la concurrencia real.
+- El costo total del escenario se suma solo desde las **tareas raíz** del
+  proyecto (no las hoja): TJ3 ya acumula el costo de las subtareas en el
+  padre, así que sumar cada subárbol raíz una vez evita contar dos veces sin
+  tener que filtrar por profundidad.
+- Filtro de "cumple la fecha pactada" (`project.date`) antes de aplicar
+  cualquier estrategia (salvo la manual): si ningún escenario la cumple, se
+  ignora el filtro para no bloquear la selección, y se dice explícitamente
+  en el chatter — nunca falla silenciosamente ni deja el proyecto sin
+  baseline.
+- Empate: se conserva el `is_baseline` actual si está entre los empatados,
+  para no barajar el Gantt nativo sin necesidad cuando el resultado es
+  indistinto.
+- La estrategia ponderada normaliza costo/duración/pico de recursos con
+  min-max (0=mejor, 1=peor) entre los escenarios candidatos — no z-score,
+  para no depender de una distribución con más de 2-3 escenarios — y guarda
+  `selection_score` por escenario para que la UI explique el resultado sin
+  tener que leer el chatter.
+- `is_baseline` se reutiliza tal cual como "el escenario elegido" (ya
+  decidía qué sincroniza con el Gantt nativo) en vez de agregar un campo
+  `is_selected` separado — evita dos fuentes de verdad para la misma
+  pregunta.
+
+### Agregado
+
+- `hr.employee.tj_daily_rate`: tarifa diaria por empleado (equivalente a
+  `rate` de TJ3), expuesta en el form de empleado.
+- `insight.task.schedule.cost`: costo TJ3 de la tarea (columna `cost` del
+  taskreport).
+- `insight.scenario`: agregados `total_cost`, `computed_end_date`,
+  `peak_resources`, `selection_score`, recalculados en cada corrida.
+- `project.project.scenario_selection_strategy` (manual / menor costo /
+  menor duración / menor pico de recursos / score ponderado) +
+  `scenario_weight_cost/duration/resources` para la estrategia ponderada.
+- `_apply_selection_strategy`: recalcula agregados, aplica el filtro de
+  fecha pactada, decide el escenario ganador y postea el resultado y el
+  motivo en el chatter del proyecto. Se invoca desde `_import_all_schedules`,
+  antes de `_sync_gantt_dates` (el Gantt nativo siempre refleja al escenario
+  que terminó ganando).
+- `_tjp_cost_account`/`chargeset`/`rate`/`currency` en el generador `.tjp`,
+  columna `cost` en `_tjp_reports`, y `_parse_tj_cost` para importarla de
+  vuelta.
+
+---
+
+## [17.0.9.3.0] - 2026-07-07
+
+### Prompt
+
+> "Has el plan para implementarla. Con esto el blocked no tiene sentido
+> pasarlo al scheduler, porque va a estirar solo la tarea."
+>
+> (contexto previo: "¿tenemos en las tareas una registración de horas
+> acumuladas? [...] deberíamos fijar cuando empezó la tarea, y debería
+> decirnos cuánto falta para terminar. El scheduler nos debería ayudar a
+> extender el fin de la tarea con esa información. No es así?")
+
+### Discusión de diseño
+
+- Cada reschedule regeneraba el `.tjp` usando siempre `task.allocated_hours`
+  completo — sin ningún mecanismo que le dijera a TJ3 "esto ya se hizo".
+  Verificado contra el manual oficial de TJ3 (taskjuggler.org) cuál es el
+  mecanismo idiomático: **`booking`** a nivel de tarea. Con al menos un
+  booking, TJ3 activa automáticamente "projection mode" (el keyword
+  `projection` está deprecado) y resta ese trabajo del `effort` total al
+  planificar lo que falta, extendiendo el fin real de la tarea.
+- Alternativas descartadas, todas verificadas en el manual: `effortdone`/
+  `effortleft` ("no ha sido completamente probado, puede dar resultados
+  incorrectos"), `complete` (puramente cosmético, "has no impact on the
+  scheduler"), `depends !now` (inválido — `depends` solo acepta IDs de
+  tarea, `now` es un atributo de `project{}`), `minstart`/`maxstart` (no
+  afectan el cálculo, solo validación post-hoc).
+- **Decisión explícita**: con `booking` implementado, el campo `blocked` de
+  Odoo (impedimento ad-hoc, vive en `project_improve`) no se exporta a TJ3.
+  Si una tarea bloqueada deja de recibir bookings, el `effort` restante no
+  avanza y el scheduler la estira por sí solo — no hace falta una señal
+  explícita de "bloqueado". `blocked` sigue siendo puramente informativo/UI.
+- Para que "proteger el pasado" tenga sentido en cada corrida sucesiva, `now`
+  no podía seguir pinneado a `self.date_start` (fijo): se separa en
+  `_tjp_now_date()` = `max(fields.Date.today(), date_start)` — nunca antes
+  del inicio del proyecto, pero avanza con cada reschedule real.
+- `_tj_project_users` debía incluir también a quien imputó timesheets en una
+  tarea sin estar en `resource_pool_ids`/`user_ids` — si no, su `booking`
+  referenciaría un recurso (`uX`) nunca declarado y TJ3 fallaría al parsear
+  el archivo. Esto solo afecta qué bloques `resource {}` se declaran; no lo
+  convierte en candidato de asignación futura (`_tjp_allocate` sigue leyendo
+  solo `resource_pool_ids`/`user_ids`).
+- Este trabajo se construyó sobre el refactor de milestones en curso en el
+  mismo archivo (`_tjp_milestone_block`, `is_milestone` → `project.milestone`
+  nativo) sin revertir nada de eso.
+
+### Agregado
+
+- `_tjp_bookings`: agrupa `task.timesheet_ids` por `(usuario, día)` y emite
+  `booking uX <fecha> +Nh` (shorthand `interval4` de fecha+duración,
+  verificado en el manual TJ3) para cada grupo con `date <= now_date`.
+  Llamado desde `_tjp_task_block` junto con `effort`/`allocate`.
+- `_tjp_now_date`: fecha de referencia real para `now`, desacoplada del
+  `start` fijo del header.
+- `hr_timesheet` agregado a `depends` (antes solo transitivo vía
+  `project_timesheet_holidays`; ahora se usa directamente `timesheet_ids`).
+
+### Cambiado
+
+- `_tjp_project_header`/`_generate_tjp`/`_tjp_task_block`: threading de
+  `now_date` para que header y bookings usen la misma referencia de "hoy".
+- `_tj_project_users`: suma `task.timesheet_ids.mapped('user_id')` al pool
+  de usuarios con bloque `resource{}` declarado.
+
+---
+
 ## [17.0.9.2.2] - 2026-07-07
 
 ### Prompt

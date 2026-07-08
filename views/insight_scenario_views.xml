@@ -8,6 +8,10 @@
                 <field name="name"/>
                 <field name="project_id"/>
                 <field name="is_baseline"/>
+                <field name="total_cost"/>
+                <field name="computed_end_date"/>
+                <field name="peak_resources"/>
+                <field name="selection_score"/>
             </tree>
         </field>
     </record>
@@ -22,6 +26,12 @@
                         <field name="name"/>
                         <field name="project_id"/>
                         <field name="is_baseline"/>
+                    </group>
+                    <group string="Resultado del último schedule">
+                        <field name="total_cost" readonly="1"/>
+                        <field name="computed_end_date" readonly="1"/>
+                        <field name="peak_resources" readonly="1"/>
+                        <field name="selection_score" readonly="1"/>
                     </group>
                     <notebook>
                         <page string="Eficiencias">
