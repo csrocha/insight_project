@@ -24,4 +24,34 @@
             </xpath>
         </field>
     </record>
+
+    <record id="view_task_kanban_inherit_insight" model="ir.ui.view">
+        <field name="name">project.task.kanban.inherit.insight_project</field>
+        <field name="model">project.task</field>
+        <field name="inherit_id" ref="project.view_task_kanban"/>
+        <field name="arch" type="xml">
+            <xpath expr="//kanban" position="inside">
+                <header>
+                    <button name="action_reschedule_project" type="object"
+                            string="Replanificar" icon="fa-refresh"
+                            display="always"/>
+                </header>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="project_task_view_tree_inherit_insight" model="ir.ui.view">
+        <field name="name">project.task.tree.main.base.inherit.insight_project</field>
+        <field name="model">project.task</field>
+        <field name="inherit_id" ref="project.project_task_view_tree_main_base"/>
+        <field name="arch" type="xml">
+            <xpath expr="//tree" position="inside">
+                <header>
+                    <button name="action_reschedule_project" type="object"
+                            string="Replanificar" icon="fa-refresh"
+                            display="always"/>
+                </header>
+            </xpath>
+        </field>
+    </record>
 </odoo>

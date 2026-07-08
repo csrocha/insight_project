@@ -24,7 +24,7 @@ class InsightScenario(models.Model):
     # Agregados calculados por project.project._apply_selection_strategy() luego
     # de cada corrida del schedule — no son fields computados porque dependen de
     # una normalización conjunta entre todos los escenarios del proyecto (ver
-    # scenario_selection_strategy='weighted_score'), no de este registro solo.
+    # scenario_selection_strategy='automatic'), no de este registro solo.
     total_cost = fields.Float(
         readonly=True,
         help='Suma del costo TJ3 de las tareas raíz del proyecto en este '
@@ -59,55 +59,64 @@ class InsightScenario(models.Model):
         help='total_cost (TJ3, mano de obra) + extra_cost (infra/SaaS).',
     )
 
+    def _cost_budget_contributions(self):
+        """Yields (insight.cost.budget, monto en moneda de la compañía) por
+        cada costo seleccionado que tuvo uso real en este escenario. Se
+        expone como método propio (no inline en _compute_extra_cost) para que
+        otros módulos (ej. insight_project_purchase) puedan derivar sus
+        propios agregados —como "cuánto de este costo ya está comprado"— sin
+        duplicar la lógica de prorrateo."""
+        self.ensure_one()
+        company_currency = self.env.company.currency_id
+        today = fields.Date.context_today(self)
+        for budget in self.cost_budget_ids:
+            matching = self.schedule_ids.filtered(
+                lambda s: (budget.skill_ids & s.task_id.required_skill_ids)
+                and s.start_scheduled and s.end_scheduled
+            )
+            if not matching:
+                continue
+            rate = budget.currency_id._convert(
+                budget.amount, company_currency,
+                self.project_id.company_id or self.env.company, today,
+            )
+            if budget.periodicity == 'one_time':
+                yield budget, rate
+                continue
+            daily_rate = {
+                'hourly': rate * 24,
+                'monthly': rate / 30.0,
+                'annual': rate / 365.0,
+            }[budget.periodicity]
+            if budget.individual:
+                days_by_user = defaultdict(float)
+                for sched in matching:
+                    days = max(
+                        (sched.end_scheduled - sched.start_scheduled).total_seconds() / 86400.0,
+                        0.0,
+                    )
+                    skilled_users = sched.resource_ids.filtered(
+                        lambda u: budget.skill_ids & u.employee_id.skill_ids
+                    )
+                    for user in skilled_users:
+                        days_by_user[user.id] += days
+                yield budget, sum(daily_rate * days for days in days_by_user.values())
+            else:
+                start = min(matching.mapped('start_scheduled'))
+                end = max(matching.mapped('end_scheduled'))
+                days = max((end - start).total_seconds() / 86400.0, 0.0)
+                yield budget, daily_rate * days
+
     @api.depends(
         'cost_budget_ids.amount', 'cost_budget_ids.currency_id',
         'cost_budget_ids.periodicity', 'cost_budget_ids.individual',
-        'cost_budget_ids.skill_id', 'schedule_ids.task_id.required_skill_ids',
+        'cost_budget_ids.skill_ids', 'schedule_ids.task_id.required_skill_ids',
         'schedule_ids.resource_ids', 'schedule_ids.resource_ids.employee_id.skill_ids',
         'schedule_ids.start_scheduled', 'schedule_ids.end_scheduled', 'total_cost',
     )
     def _compute_extra_cost(self):
-        company_currency = self.env.company.currency_id
         for scenario in self:
-            extra = 0.0
-            today = fields.Date.context_today(scenario)
-            for budget in scenario.cost_budget_ids:
-                matching = scenario.schedule_ids.filtered(
-                    lambda s: budget.skill_id in s.task_id.required_skill_ids
-                    and s.start_scheduled and s.end_scheduled
-                )
-                if not matching:
-                    continue
-                rate = budget.currency_id._convert(
-                    budget.amount, company_currency,
-                    scenario.project_id.company_id or self.env.company, today,
-                )
-                if budget.periodicity == 'one_time':
-                    extra += rate
-                    continue
-                daily_rate = {
-                    'hourly': rate * 24,
-                    'monthly': rate / 30.0,
-                    'annual': rate / 365.0,
-                }[budget.periodicity]
-                if budget.individual:
-                    days_by_user = defaultdict(float)
-                    for sched in matching:
-                        days = max(
-                            (sched.end_scheduled - sched.start_scheduled).total_seconds() / 86400.0,
-                            0.0,
-                        )
-                        skilled_users = sched.resource_ids.filtered(
-                            lambda u: budget.skill_id in u.employee_id.skill_ids
-                        )
-                        for user in skilled_users:
-                            days_by_user[user.id] += days
-                    extra += sum(daily_rate * days for days in days_by_user.values())
-                else:
-                    start = min(matching.mapped('start_scheduled'))
-                    end = max(matching.mapped('end_scheduled'))
-                    days = max((end - start).total_seconds() / 86400.0, 0.0)
-                    extra += daily_rate * days
+            extra = sum(amount for _, amount in scenario._cost_budget_contributions())
             scenario.extra_cost = extra
             scenario.grand_total_cost = scenario.total_cost + extra
 

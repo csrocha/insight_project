@@ -9,6 +9,83 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.5.0] - 2026-07-08
+
+### Prompt
+
+> "¿La descalificación es binaria (si falta cualquier recurso comprometido sin
+> comprar, el escenario queda fuera de la comparación) o hay margen para
+> 'parcialmente viable'? El escenario se ejecuta igual, porque el
+> administrador del proyecto tiene que conocer 'que se está perdiendo'. [...]
+> ¿Esto conserva scenario_selection_strategy='manual' intacto [...] o la
+> compra confirmada siempre pisa la selección manual? Si es manual es
+> manual. [...] La pregunta es... vale la pena las estrategias parciales si
+> tenemos el ponderado? [...] menor costo es decir que costo pondera 1, y el
+> resto cero. [...] Y que las estrategias sean solo manual o automático.
+> ¿Estoy correcto?"
+
+Esta versión es el prerrequisito ("Parte A") de una funcionalidad más grande
+—vincular `insight.cost.budget` a compras reales (`purchase.order`)— que se
+va a implementar en un módulo nuevo (`insight_project_purchase`, depende de
+`insight_project` + `purchase`, sin que `insight_project` sume esa
+dependencia). Ver plan completo en la conversación que originó este cambio.
+
+### Discusión de diseño
+
+- `min_cost`/`min_duration`/`min_resources` son matemáticamente
+  `weighted_score` con un peso en 1 y el resto en 0: la normalización
+  min-max de `_weighted_scenario_scores` es monótona, así que el orden
+  resultante de comparar por un solo eje ponderado es idéntico a comparar
+  por ese valor crudo. Confirmado con el usuario, se colapsó
+  `scenario_selection_strategy` a solo `manual`/`automatic`. `_scenario_metrics`
+  (el `if strategy == ...` que despachaba a cada estrategia) quedó sin razón
+  de ser — `_apply_selection_strategy` ya corta temprano si `strategy ==
+  'manual'`, así que lo único que podía llegar ahí era `weighted_score`. Se
+  eliminó el método y `_apply_selection_strategy` llama directo a
+  `_weighted_scenario_scores`.
+- Migración (`migrations/17.0.9.5.0/pre-migrate.py`, mismo patrón SQL crudo
+  que las migraciones anteriores del addon): cada proyecto con
+  `min_cost`/`min_duration`/`min_resources` se reescribe a `automatic` +
+  los 3 pesos correspondientes (1/0/0, 0/1/0, 0/0/1) para preservar el
+  comportamiento exacto; `weighted_score` pasa a `automatic` sin tocar
+  pesos (ya eran explícitos).
+- De paso, para la Parte B: `insight.cost.budget.skill_id` (Many2one) pasa a
+  `skill_ids` (Many2many, relación explícita
+  `insight_cost_budget_hr_skill_rel` en vez de autogenerada, para que la
+  migración la pueda referenciar sin ambigüedad). Semántica confirmada con
+  el usuario: "alguno" (OR) — el costo se considera usado si la tarea
+  requiere al menos uno de los skills de la línea, no todos. La migración
+  copia cada `skill_id` no nulo a la nueva tabla de relación y dropea la
+  columna vieja.
+- Se extrajo `insight.scenario._cost_budget_contributions()` (generador de
+  `(budget, monto)`) desde adentro de `_compute_extra_cost`, sin cambiar su
+  comportamiento — es pura preparación para que el módulo nuevo pueda sumar
+  solo los costos con compra confirmada (`secured_extra_cost`) sin duplicar
+  la lógica de prorrateo por skill/individual/periodicidad.
+- `tests/test_scenario_selection.py`: las asignaciones directas de
+  `min_cost`/`min_duration`/`min_resources` pasan a
+  `.write({'scenario_selection_strategy': 'automatic', 'scenario_weight_...': ...})`
+  con los pesos equivalentes explícitos; `weighted_score` se renombra a
+  `automatic` sin otro cambio (esos tests ya traían pesos explícitos).
+
+### Cambiado
+
+- `scenario_selection_strategy`: de 5 opciones a 2
+  (`manual`/`automatic`). `automatic` reemplaza a `weighted_score` y a los
+  antiguos `min_cost`/`min_duration`/`min_resources` (poniendo el peso
+  correspondiente en 1 y el resto en 0).
+- `insight.cost.budget.skill_id` (Many2one) → `skill_ids` (Many2many),
+  semántica "alguno" en el matching contra `required_skill_ids`.
+- `_compute_extra_cost` se apoya ahora en `_cost_budget_contributions()`
+  (mismo resultado, lógica reutilizable).
+
+### Eliminado
+
+- `project.project._scenario_metrics` (indirección sin uso tras colapsar
+  las estrategias).
+
+---
+
 ## [17.0.9.4.3] - 2026-07-08
 
 ### Prompt

@@ -8,10 +8,12 @@ class InsightCostBudget(models.Model):
 
     project_id = fields.Many2one('project.project', required=True, ondelete='cascade')
     product_id = fields.Many2one('product.product', required=True)
-    skill_id = fields.Many2one(
-        'hr.skill', required=True,
-        help='Skill que identifica qué tareas usan este producto/servicio '
-             '(project.task.required_skill_ids).',
+    skill_ids = fields.Many2many(
+        'hr.skill', relation='insight_cost_budget_hr_skill_rel',
+        column1='cost_budget_id', column2='skill_id', required=True,
+        help='Skills que identifican qué tareas usan este producto/servicio '
+             '(basta con que la tarea requiera alguno de estos skills entre sus '
+             'project.task.required_skill_ids).',
     )
     individual = fields.Boolean(
         help='Si está marcado, el costo se paga por cada empleado asignado a una '

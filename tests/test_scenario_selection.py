@@ -79,7 +79,11 @@ class TestMinCostStrategy(TestScenarioSelectionBase):
         self.project._import_scenario_csv(
             self._csv(self._row(task, '2024-01-01', '2024-01-05', cost='500')), expensive,
         )
-        self.project.scenario_selection_strategy = 'min_cost'
+        self.project.write({
+            'scenario_selection_strategy': 'automatic',
+            'scenario_weight_cost': 1.0, 'scenario_weight_duration': 0.0,
+            'scenario_weight_resources': 0.0,
+        })
         self.project._apply_selection_strategy()
 
         self.assertTrue(cheap.is_baseline)
@@ -106,7 +110,11 @@ class TestMinDurationStrategy(TestScenarioSelectionBase):
         self.project._import_scenario_csv(
             self._csv(self._row(task, '2024-01-01', '2024-02-05')), slow,
         )
-        self.project.scenario_selection_strategy = 'min_duration'
+        self.project.write({
+            'scenario_selection_strategy': 'automatic',
+            'scenario_weight_cost': 0.0, 'scenario_weight_duration': 1.0,
+            'scenario_weight_resources': 0.0,
+        })
         self.project._apply_selection_strategy()
 
         self.assertTrue(fast.is_baseline)
@@ -139,7 +147,11 @@ class TestMinResourcesStrategy(TestScenarioSelectionBase):
             'A task ending exactly when another starts must not count as concurrent',
         )
 
-        self.project.scenario_selection_strategy = 'min_resources'
+        self.project.write({
+            'scenario_selection_strategy': 'automatic',
+            'scenario_weight_cost': 0.0, 'scenario_weight_duration': 0.0,
+            'scenario_weight_resources': 1.0,
+        })
         self.project._apply_selection_strategy()
         self.assertTrue(sequential.is_baseline)
         self.assertFalse(parallel.is_baseline)
@@ -159,7 +171,7 @@ class TestWeightedScoreStrategy(TestScenarioSelectionBase):
         ), expensive_fast)
 
         self.project.write({
-            'scenario_selection_strategy': 'weighted_score',
+            'scenario_selection_strategy': 'automatic',
             'scenario_weight_cost': 1.0,
             'scenario_weight_duration': 0.0,
             'scenario_weight_resources': 0.0,
@@ -170,7 +182,7 @@ class TestWeightedScoreStrategy(TestScenarioSelectionBase):
         self.assertEqual(expensive_fast.selection_score, 1.0)
 
         self.project.write({
-            'scenario_selection_strategy': 'weighted_score',
+            'scenario_selection_strategy': 'automatic',
             'scenario_weight_cost': 0.0,
             'scenario_weight_duration': 1.0,
             'scenario_weight_resources': 0.0,
@@ -193,7 +205,11 @@ class TestDeadlineGate(TestScenarioSelectionBase):
             self._row(task, '2024-01-01', '2024-01-20', cost='300'),
         ), pricier_on_time)
 
-        self.project.scenario_selection_strategy = 'min_cost'
+        self.project.write({
+            'scenario_selection_strategy': 'automatic',
+            'scenario_weight_cost': 1.0, 'scenario_weight_duration': 0.0,
+            'scenario_weight_resources': 0.0,
+        })
         self.project._apply_selection_strategy()
 
         self.assertTrue(
@@ -213,7 +229,11 @@ class TestDeadlineGate(TestScenarioSelectionBase):
             self._row(task, '2024-01-01', '2024-03-15', cost='500'),
         ), expensive)
 
-        self.project.scenario_selection_strategy = 'min_cost'
+        self.project.write({
+            'scenario_selection_strategy': 'automatic',
+            'scenario_weight_cost': 1.0, 'scenario_weight_duration': 0.0,
+            'scenario_weight_resources': 0.0,
+        })
         self.project._apply_selection_strategy()
 
         self.assertTrue(cheap.is_baseline, 'Falls back to comparing every scenario when none meets the deadline')
@@ -239,7 +259,11 @@ class TestTieBreak(TestScenarioSelectionBase):
             self._row(task, '2024-01-01', '2024-01-10', cost='100'),
         ), alternative)
 
-        self.project.scenario_selection_strategy = 'min_cost'
+        self.project.write({
+            'scenario_selection_strategy': 'automatic',
+            'scenario_weight_cost': 1.0, 'scenario_weight_duration': 0.0,
+            'scenario_weight_resources': 0.0,
+        })
         self.project._apply_selection_strategy()
 
         self.assertTrue(current.is_baseline, 'A tie should not switch away from the current baseline')

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-from odoo import models, fields, api
+from odoo import models, fields, api, _
+from odoo.exceptions import UserError
 
 
 class ProjectTask(models.Model):
@@ -67,3 +68,22 @@ class ProjectTask(models.Model):
             ('remaining_hours', '<=', 0),
         ])
         (overdue | over_budget).write({'state': '02_changes_requested'})
+
+    def action_reschedule_project(self):
+        """Botón de replanificado en kanban/tree de tareas: actúa sobre el
+        proyecto contenedor (el schedule TJ3 es por proyecto, no por tarea),
+        no sobre las tareas seleccionadas. Se apoya en `default_project_id`
+        (fijado por project.act_project_project_2_project_task_all) en vez de
+        `active_model`/`active_id`: el botón de vista (MultiRecordViewButton)
+        pisa `active_model` con el resModel de la propia lista ('project.task'),
+        así que ese chequeo nunca es cierto acá."""
+        ctx = self.env.context
+        project_id = ctx.get('default_project_id')
+        if not project_id and ctx.get('active_model') == 'project.project':
+            project_id = ctx.get('active_id')
+        project = self.env['project.project'].browse(project_id) if project_id else self.env['project.project']
+        if not project.exists():
+            project = self.mapped('project_id')[:1]
+        if not project:
+            raise UserError(_('Abra esta vista desde un proyecto para poder replanificarlo.'))
+        return project.action_run_schedule()

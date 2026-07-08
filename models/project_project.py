@@ -68,16 +68,17 @@ class ProjectProject(models.Model):
     scenario_selection_strategy = fields.Selection(
         [
             ('manual', 'Mantener selección manual'),
-            ('min_cost', 'Menor costo'),
-            ('min_duration', 'Menor duración'),
-            ('min_resources', 'Menor pico de recursos'),
-            ('weighted_score', 'Score ponderado (multiobjetivo)'),
+            ('automatic', 'Selección automática (ponderada)'),
         ],
         string='Estrategia de selección de escenario', default='manual',
         help='Cómo elegir automáticamente, después de cada corrida de schedule, '
              'cuál escenario pasa a ser el baseline (el que sincroniza con el '
              'Gantt nativo de Odoo). "Mantener selección manual" preserva el '
-             'comportamiento de siempre: nadie cambia is_baseline salvo el usuario.',
+             'comportamiento de siempre: nadie cambia is_baseline salvo el usuario. '
+             '"Selección automática" pondera costo/duración/recursos según los pesos '
+             'de abajo — poné en 0 los ejes que no te interesen para reproducir un '
+             'criterio de un solo objetivo (ej. peso costo=1 y el resto en 0 para '
+             '"menor costo").',
     )
     scenario_weight_cost = fields.Float(string='Peso: costo', default=1.0)
     scenario_weight_duration = fields.Float(string='Peso: duración', default=1.0)
@@ -754,18 +755,6 @@ class ProjectProject(models.Model):
                 'peak_resources': self._peak_concurrent_resources(scenario, leaf_task_ids),
             })
 
-    def _scenario_metrics(self, candidates):
-        """{scenario.id: valor} según la estrategia activa — menor es mejor
-        en todos los casos, incluida la ponderada."""
-        strategy = self.scenario_selection_strategy
-        if strategy == 'min_cost':
-            return {s.id: round(s.grand_total_cost, 2) for s in candidates}
-        if strategy == 'min_duration':
-            return {s.id: (s.computed_end_date or datetime.max) for s in candidates}
-        if strategy == 'min_resources':
-            return {s.id: s.peak_resources for s in candidates}
-        return self._weighted_scenario_scores(candidates)
-
     def _weighted_scenario_scores(self, candidates):
         """Normaliza costo/duración/pico de recursos (min-max, 0=mejor,
         1=peor) entre `candidates` y combina con los pesos configurados en el
@@ -821,7 +810,7 @@ class ProjectProject(models.Model):
             else:
                 missed_deadline = True
 
-        metric_by_scenario = self._scenario_metrics(candidates)
+        metric_by_scenario = self._weighted_scenario_scores(candidates)
         best_value = min(metric_by_scenario.values())
         tied = candidates.filtered(lambda s: metric_by_scenario[s.id] == best_value)
 

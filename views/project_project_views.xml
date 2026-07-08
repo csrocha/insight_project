@@ -48,10 +48,10 @@
                             <field name="computed_end_date"/>
                             <field name="peak_resources"/>
                             <field name="selection_score"
-                                   invisible="parent.scenario_selection_strategy != 'weighted_score'"/>
+                                   invisible="parent.scenario_selection_strategy != 'automatic'"/>
                         </tree>
                     </field>
-                    <group invisible="scenario_selection_strategy != 'weighted_score'">
+                    <group invisible="scenario_selection_strategy != 'automatic'">
                         <group string="Pesos del score ponderado">
                             <field name="scenario_weight_cost"/>
                             <field name="scenario_weight_duration"/>
@@ -63,7 +63,7 @@
                            context="{'default_project_id': active_id}">
                         <tree editable="bottom">
                             <field name="product_id"/>
-                            <field name="skill_id"/>
+                            <field name="skill_ids" widget="many2many_tags"/>
                             <field name="individual"/>
                             <field name="periodicity"/>
                             <field name="amount"/>
