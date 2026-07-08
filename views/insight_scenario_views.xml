@@ -37,7 +37,7 @@
                         <page string="Eficiencias">
                             <field name="efficiency_ids">
                                 <tree editable="bottom">
-                                    <field name="partner_id"/>
+                                    <field name="user_id"/>
                                     <field name="efficiency"/>
                                 </tree>
                             </field>

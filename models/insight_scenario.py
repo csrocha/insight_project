@@ -43,5 +43,5 @@ class InsightScenarioEfficiency(models.Model):
     _description = 'Scenario Resource Efficiency Override'
 
     scenario_id = fields.Many2one('insight.scenario', required=True, ondelete='cascade')
-    partner_id = fields.Many2one('res.partner', required=True)
+    user_id = fields.Many2one('res.users', required=True)
     efficiency = fields.Float(default=1.0)

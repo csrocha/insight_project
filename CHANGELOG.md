@@ -9,6 +9,53 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.4.1] - 2026-07-07
+
+### Prompt
+
+> "En el módulo insight_project y project_improve en los escenarios se
+> puede cambiar por usuario su eficiencia. El problema está en que ahora
+> no hay usuarios para elegir sino que son res.partners y eso no es
+> compatible con los recursos seleccionables. Hay que usar siempre
+> usuarios."
+
+### Discusión de diseño
+
+- `insight.scenario.efficiency.partner_id` (`res.partner`) quedó de la
+  implementación original de escenarios (`17.0.9.4.0`) mientras que los
+  recursos seleccionables del proyecto (`project.project.candidate_user_ids`,
+  `project.task.resource_pool_ids`, `task.user_ids`) siempre fueron
+  `res.users`. El picker de la línea de eficiencia por escenario ofrecía
+  cualquier contacto del sistema en vez de un recurso válido, y
+  `_tjp_scenario_supplement` dependía de un round-trip partner→user
+  (`_tjp_resource_id` ya resuelve `res.users` a partir de un `partner_id`
+  para todo el resto del export TJP) que no aportaba nada salvo el bug.
+- Se optó por el cambio mínimo consistente con el resto del archivo:
+  renombrar el campo a `user_id` (`res.users`) y en el único call site
+  (`_tjp_scenario_supplement`) pasar `eff.user_id.partner_id.id` a
+  `_tjp_resource_id`, en vez de generalizar esa función para aceptar un
+  usuario directamente — todos los demás call sites
+  (`_tjp_resource_block`, `_tjp_bookings`, `_tjp_allocate`) ya siguen ese
+  mismo patrón de partir de un `res.users` en mano y pasar su
+  `partner_id.id`.
+- Sin domain en el picker de `user_id`: se decidió no restringirlo a los
+  candidatos/recursos del proyecto por ahora, para no acoplar el picker de
+  eficiencias a `_tj_project_users()` en esta pasada.
+- Migración de datos en `migrations/17.0.9.4.1/pre-migrate.py`: puebla
+  `user_id` buscando el `res.users` cuyo `partner_id` coincida con el
+  `partner_id` viejo, y elimina (con warning en el log) las filas
+  huérfanas cuyo contacto no tiene usuario Odoo asociado, ya que
+  `user_id` es `required=True` y no hay forma válida de migrarlas.
+
+### Corregido
+
+- `insight.scenario.efficiency`: el recurso de la línea de eficiencia por
+  escenario ahora es `user_id` (`res.users`) en vez de `partner_id`
+  (`res.partner`), consistente con el resto de los campos de recursos
+  seleccionables del proyecto.
+
+---
+
 ## [17.0.9.4.0] - 2026-07-07
 
 ### Prompt

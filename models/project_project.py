@@ -484,7 +484,7 @@ class ProjectProject(models.Model):
         lines = []
         sc_id = self._tjp_scenario_id(scenario)
         for eff in scenario.efficiency_ids:
-            res_id = self._tjp_resource_id(eff.partner_id.id)
+            res_id = self._tjp_resource_id(eff.user_id.partner_id.id)
             lines += [
                 f'supplement resource {res_id} {{',
                 f'  {sc_id}:efficiency {eff.efficiency:.2f}',
