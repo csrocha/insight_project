@@ -9,6 +9,112 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.4.3] - 2026-07-08
+
+### Prompt
+
+> "Quiero que pienses en un plan para agregar costos extras para los
+> escenarios. Quiero agregar costos de infrainstructura, costos de un
+> servicio o SaaS. Esto debería usar un producto, que usando presupuestos
+> puedan ayudar a calcular los costos. Por ejemplo, averiguo cuanto sale
+> QuestionPro y el presupuesto es anual por X, quiero tener eso en cuenta.
+> Entonces, lo que podríamos asignar directamente una lista de presupuestos
+> e indicar si el presupuesto es mensual, anual, por hora, etc. Evalua la
+> funcionalidad usando los presupuestos de Odoo."
+
+Aclaración clave de seguimiento que definió el algoritmo:
+
+> "La periodicidad debería ser parte de una relación entre escenario --
+> [skills, individual, periodisidad] --> presupuesto. Algo muy sensillo.
+> Entonces cuando vuelva el presupuesto de tj3 hay que ver cuanto tiempo se
+> usa durante el proyecto: usa skill para identificar las tareas que
+> requieren ese producto. Si es individual, por cada uno de los empleados
+> que tenga el skill le corresponde pagar un presupuesto, sino es un único
+> presupuesto para todos durante el período de uso. La suma de todos los
+> costos de productos se suma al costo total."
+
+### Discusión de diseño
+
+- Se evaluó reutilizar `account_budget` de Odoo (`crossovered.budget`/
+  `crossovered.budget.lines`) y se descartó: es Enterprise-only, no tiene
+  periodicidad automática (cada línea es un rango de fechas manual con
+  monto fijo) y no se vincula a productos (solo a cuentas analíticas/
+  contables). Se optó por un modelo propio muy simple en su lugar.
+- Nuevo modelo `insight.cost.budget`: catálogo de costos extra por
+  `project.project` (no por escenario) con `product_id` (`product.product`,
+  agrega dependencia del módulo `product`), `skill_id` (`hr.skill` — el
+  mismo mecanismo que `project_improve` ya usa en
+  `project.task.required_skill_ids`/`resource_pool_ids` para asignar
+  tareas), `individual` (bool), `periodicity` (hora/mes/año/único) y
+  `amount`+`currency_id`. Cada escenario elige cuáles aplican vía
+  `insight.scenario.cost_budget_ids` (M2M con domain por proyecto).
+- Algoritmo de cálculo (`insight.scenario._compute_extra_cost`): para cada
+  costo seleccionado, se filtran las filas de `schedule_ids` cuya
+  `task_id.required_skill_ids` contenga el skill del costo. Si no hay
+  ninguna, el costo no aporta nada (nunca se "usó"). Periodicidad `one_time`
+  suma el monto completo una sola vez sin proratear. Para el resto se
+  calcula una tasa diaria (`amount/365` anual, `amount/30` mensual,
+  `amount*24` por hora) y se prorratea:
+  - `individual=True`: se agrupa por empleado usando
+    `insight.task.schedule.resource_ids` (la asignación **real** que
+    devolvió TJ3, no `resource_pool_ids` que es solo el pool de candidatos
+    previo al schedule), sumando los días de sus tareas que matchean, y se
+    cobra la tasa diaria una vez por cada empleado calificado.
+  - `individual=False`: se toma la ventana compartida (mín `start_scheduled`,
+    máx `end_scheduled` entre todas las filas que matchean) y se prorratea
+    una sola vez, sin duplicar por empleado (ej. un servidor compartido).
+- Chequeo defensivo agregado a pedido explícito del usuario durante la
+  revisión del plan: `project.task.resource_pool_ids` es
+  `store=True, readonly=False` (editable a mano), así que en el caso
+  `individual` se revalida `budget.skill_id in user.employee_id.skill_ids`
+  antes de cobrarle a un empleado — cubre el caso borde de que alguien
+  fuerce en el pool a un empleado sin el skill y TJ3 termine asignándolo.
+- `extra_cost`/`grand_total_cost` se implementaron como `compute(store=True)`
+  declarativos (no imperativos como `total_cost`, que lo escribe
+  `_compute_scenario_aggregates` después de cada corrida de TJ3) porque solo
+  dependen de datos ya guardados (`schedule_ids`, `cost_budget_ids`): se
+  recalculan solos apenas el usuario cambia la selección de costos, sin
+  tener que re-correr el schedule.
+- `grand_total_cost = total_cost + extra_cost` pasó a ser el valor que usan
+  `_scenario_metrics`, `_weighted_scenario_scores` y
+  `_post_selection_message` (antes leían `total_cost` a secas), para que los
+  costos extra realmente influyan en qué escenario gana la selección
+  automática (`scenario_selection_strategy`). `total_cost` no se tocó: sigue
+  mostrando el costo laboral puro de TJ3 para transparencia.
+- Conversión de moneda explícita (`currency_id._convert(...)`) al sumar cada
+  costo: `total_cost`/`extra_cost` son floats en moneda de la compañía sin
+  campo de moneda propio, y los costos de SaaS típicos (QuestionPro, AWS)
+  suelen cargarse en USD mientras la contabilidad puede estar en otra
+  moneda.
+- Verificación: instalación limpia del módulo en una base de datos
+  descartable (`odoo -i insight_project --stop-after-init`, sin errores) y
+  una prueba funcional vía `odoo shell` con proyecto/tareas/empleados/
+  schedule sintéticos que confirmó los cuatro casos (individual=20.0,
+  compartido=14.0, único=500.0, combinado=534.0), incluido que un empleado
+  sin el skill forzado a mano en el pool queda correctamente excluido del
+  cobro individual.
+
+### Agregado
+
+- Modelo `insight.cost.budget` (catálogo de costos extra de infraestructura/
+  SaaS por proyecto).
+- `project.project.cost_budget_ids` (catálogo embebido en la pestaña
+  TaskJuggler) e `insight.scenario.cost_budget_ids` (selección por
+  escenario).
+- `insight.scenario.extra_cost` y `grand_total_cost` (computados,
+  `store=True`).
+- Vista `views/insight_cost_budget_views.xml` y accesos en
+  `ir.model.access.csv`.
+
+### Cambiado
+
+- `_scenario_metrics`, `_weighted_scenario_scores` y
+  `_post_selection_message` comparan/muestran `grand_total_cost` en vez de
+  `total_cost`.
+- `depends` del manifest: se agregó `product`.
+
+---
+
 ## [17.0.9.4.2] - 2026-07-08
 
 ### Prompt

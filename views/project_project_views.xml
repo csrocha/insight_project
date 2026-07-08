@@ -43,6 +43,8 @@
                             <field name="name"/>
                             <field name="is_baseline"/>
                             <field name="total_cost"/>
+                            <field name="extra_cost"/>
+                            <field name="grand_total_cost"/>
                             <field name="computed_end_date"/>
                             <field name="peak_resources"/>
                             <field name="selection_score"
@@ -56,6 +58,18 @@
                             <field name="scenario_weight_resources"/>
                         </group>
                     </group>
+                    <separator string="Costos extra (infra/SaaS)" invisible="not is_tj_enabled"/>
+                    <field name="cost_budget_ids" invisible="not is_tj_enabled"
+                           context="{'default_project_id': active_id}">
+                        <tree editable="bottom">
+                            <field name="product_id"/>
+                            <field name="skill_id"/>
+                            <field name="individual"/>
+                            <field name="periodicity"/>
+                            <field name="amount"/>
+                            <field name="currency_id" groups="base.group_multi_currency"/>
+                        </tree>
+                    </field>
                 </page>
             </xpath>
         </field>

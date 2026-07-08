@@ -1,4 +1,6 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_insight_cost_budget_manager,insight.cost.budget manager,model_insight_cost_budget,project.group_project_manager,1,1,1,1
+access_insight_cost_budget_user,insight.cost.budget user,model_insight_cost_budget,base.group_user,1,0,0,0
 access_insight_scenario_manager,insight.scenario manager,model_insight_scenario,project.group_project_manager,1,1,1,1
 access_insight_scenario_user,insight.scenario user,model_insight_scenario,base.group_user,1,0,0,0
 access_insight_scenario_efficiency_manager,insight.scenario.efficiency manager,model_insight_scenario_efficiency,project.group_project_manager,1,1,1,1

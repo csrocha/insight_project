@@ -46,6 +46,9 @@ class ProjectProject(models.Model):
     )
     is_tj_enabled = fields.Boolean(string='Habilitar integración TaskJuggler')
     scenario_ids = fields.One2many('insight.scenario', 'project_id', string='Escenarios')
+    cost_budget_ids = fields.One2many(
+        'insight.cost.budget', 'project_id', string='Costos extra (infra/SaaS)',
+    )
     schedule_dirty = fields.Boolean(string='Schedule desactualizado')
     last_scheduled = fields.Datetime(string='Último schedule', readonly=True)
     tj_allocation_selection = fields.Selection(
@@ -756,7 +759,7 @@ class ProjectProject(models.Model):
         en todos los casos, incluida la ponderada."""
         strategy = self.scenario_selection_strategy
         if strategy == 'min_cost':
-            return {s.id: round(s.total_cost, 2) for s in candidates}
+            return {s.id: round(s.grand_total_cost, 2) for s in candidates}
         if strategy == 'min_duration':
             return {s.id: (s.computed_end_date or datetime.max) for s in candidates}
         if strategy == 'min_resources':
@@ -775,7 +778,7 @@ class ProjectProject(models.Model):
                 return {k: 0.0 for k in raw}
             return {k: (v - lo) / span for k, v in raw.items()}
 
-        cost_n = _normalized({s.id: s.total_cost for s in candidates})
+        cost_n = _normalized({s.id: s.grand_total_cost for s in candidates})
         duration_n = _normalized({
             s.id: s.computed_end_date.timestamp() if s.computed_end_date else 0.0
             for s in candidates
@@ -852,7 +855,7 @@ class ProjectProject(models.Model):
                 '%(marker)s %(name)s — costo %(cost).2f, fin %(end)s, '
                 'pico de recursos %(peak)d%(note)s'
             ) % {
-                'marker': marker, 'name': sc.name, 'cost': sc.total_cost,
+                'marker': marker, 'name': sc.name, 'cost': sc.grand_total_cost,
                 'end': end_txt, 'peak': sc.peak_resources, 'note': note,
             })
         self.message_post(body=Markup('<br/>').join(lines))

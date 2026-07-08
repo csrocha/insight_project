@@ -1,4 +1,5 @@
 from . import res_config_settings
+from . import insight_cost_budget
 from . import insight_scenario
 from . import insight_task_schedule
 from . import project_project

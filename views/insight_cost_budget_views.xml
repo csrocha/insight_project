@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_insight_cost_budget_list" model="ir.ui.view">
+        <field name="name">insight.cost.budget.list</field>
+        <field name="model">insight.cost.budget</field>
+        <field name="arch" type="xml">
+            <tree editable="bottom">
+                <field name="product_id"/>
+                <field name="skill_id"/>
+                <field name="individual"/>
+                <field name="periodicity"/>
+                <field name="amount"/>
+                <field name="currency_id" groups="base.group_multi_currency"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_insight_cost_budget_form" model="ir.ui.view">
+        <field name="name">insight.cost.budget.form</field>
+        <field name="model">insight.cost.budget</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="project_id"/>
+                        <field name="product_id"/>
+                        <field name="skill_id"/>
+                        <field name="individual"/>
+                        <field name="periodicity"/>
+                        <field name="amount"/>
+                        <field name="currency_id"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+</odoo>
