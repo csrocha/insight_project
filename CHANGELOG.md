@@ -9,6 +9,40 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.4.2] - 2026-07-08
+
+### Prompt
+
+> "Tenemos problemas con los mensajes del chatter que estan mal
+> rendereados. Aparecen tags html en el mensaje."
+
+### Discusión de diseño
+
+- `mail.thread.message_post(body=...)` en esta versión de Odoo escapa el
+  `body` cuando es un `str` plano (lo dice su propio docstring: "str
+  content will be escaped, Markup for html body"). Los mensajes que se
+  arman concatenando líneas con `'<br/>'.join(...)` o
+  `texto.replace('\n', '<br/>')` (el aviso de escenarios sin planificar de
+  `_call_tj_microservice`, y el nuevo resumen de selección de escenario de
+  `17.0.9.4.0`) quedaban con el `<br/>` escapado y visible como texto
+  literal en vez de un salto de línea real.
+- Fix: envolver el resultado con `markupsafe.Markup('<br/>').join(lines)`
+  en vez de `'<br/>'.join(lines)`. `Markup.join()` no solo evita el
+  doble-escapado del separador — también escapa automáticamente cada
+  línea que sea un `str` plano, así que de paso resuelve un riesgo de XSS
+  si un nombre de escenario/tarea (texto libre del usuario) contuviera
+  `<`, `>` o `&`.
+- No se tocó el `message_post` de `_check_horizon_overrun`: es una sola
+  línea sin HTML, el bug no lo afecta.
+
+### Corregido
+
+- `_call_tj_microservice`/`_post_selection_message`: mensajes de chatter
+  multilínea ahora usan `Markup('<br/>').join(...)` en vez de concatenar
+  `<br/>` como texto plano.
+
+---
+
 ## [17.0.9.4.1] - 2026-07-07
 
 ### Prompt

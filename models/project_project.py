@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 import pytz
+from markupsafe import Markup
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
@@ -215,7 +216,7 @@ class ProjectProject(models.Model):
             if unscheduled and self.id:
                 n_unscheduled = int(unscheduled.group(1))
                 message = self._tj_unscheduled_message(n_unscheduled)
-                self.message_post(body=message.replace('\n', '<br/>'))
+                self.message_post(body=Markup('<br/>').join(message.split('\n')))
                 raise UnscheduledTasksError(n_unscheduled, message)
             raise UserError(_('Error del microservicio TJ3: %s\n%s') % (str(e), detail))
 
@@ -854,7 +855,7 @@ class ProjectProject(models.Model):
                 'marker': marker, 'name': sc.name, 'cost': sc.total_cost,
                 'end': end_txt, 'peak': sc.peak_resources, 'note': note,
             })
-        self.message_post(body='<br/>'.join(lines))
+        self.message_post(body=Markup('<br/>').join(lines))
 
     def _sync_gantt_dates(self):
         """Push the baseline scenario's schedule into the standard Gantt
