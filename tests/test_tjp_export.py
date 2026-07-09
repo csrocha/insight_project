@@ -178,6 +178,77 @@ class TestTjpResourceBlock(TransactionCase):
         with self.assertRaises(UserError):
             self.project._tjp_resource_id(orphan_partner.id)
 
+    def test_resource_specific_attendance_override_does_not_leak_to_other_employees(self):
+        """Una fila de `attendance_ids` con `resource_id` seteado es una
+        excepción individual dentro de un calendario compartido — no debe
+        filtrarse al horario exportado de otro empleado que usa el mismo
+        calendario."""
+        other_user = self.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Marc Demo Test',
+            'login': 'marc_test@insight.test',
+            'email': 'marc_test@insight.test',
+            'groups_id': [(4, self.env.ref('base.group_user').id)],
+        })
+        other_employee = self.env['hr.employee'].create({
+            'name': 'Marc Demo Test',
+            'user_id': other_user.id,
+            'resource_calendar_id': self.calendar.id,
+        })
+        self.env['resource.calendar.attendance'].create({
+            'name': 'Excepción sábado Marc',
+            'calendar_id': self.calendar.id,
+            'resource_id': other_employee.resource_id.id,
+            'dayofweek': '5',
+            'hour_from': 9.0,
+            'hour_to': 13.0,
+        })
+
+        mitchell_text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        marc_text = '\n'.join(self.project._tjp_resource_block(other_user))
+
+        self.assertIn('  workinghours sat off', mitchell_text)
+        self.assertNotIn('9:00 - 13:00', mitchell_text)
+        self.assertIn('  workinghours sat 9:00 - 13:00', marc_text)
+
+    def test_two_weeks_calendar_uses_only_the_week_matching_the_reference_date(self):
+        """Un calendario rotativo (`two_weeks_calendar`) no debe fundir las
+        horas de ambas semanas en un mismo día — solo aplican las de la
+        semana vigente en la fecha de referencia (date_start del proyecto)."""
+        ref_week_type = str(
+            self.env['resource.calendar.attendance'].get_week_type(self.project.date_start)
+        )
+        other_week_type = '1' if ref_week_type == '0' else '0'
+
+        rotating_calendar = self.env['resource.calendar'].create({
+            'name': 'Calendario rotativo de prueba',
+            'two_weeks_calendar': True,
+            'attendance_ids': [(5, 0, 0)] + [
+                (0, 0, {
+                    'name': 'Semana vigente', 'dayofweek': '0',
+                    'hour_from': 8.0, 'hour_to': 12.0, 'week_type': ref_week_type,
+                }),
+                (0, 0, {
+                    'name': 'Otra semana', 'dayofweek': '1',
+                    'hour_from': 8.0, 'hour_to': 12.0, 'week_type': other_week_type,
+                }),
+            ],
+        })
+        rotating_user = self.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Rotativo Test',
+            'login': 'rotativo_test@insight.test',
+            'email': 'rotativo_test@insight.test',
+            'groups_id': [(4, self.env.ref('base.group_user').id)],
+        })
+        self.env['hr.employee'].create({
+            'name': 'Rotativo Test',
+            'user_id': rotating_user.id,
+            'resource_calendar_id': rotating_calendar.id,
+        })
+
+        text = '\n'.join(self.project._tjp_resource_block(rotating_user))
+        self.assertIn('  workinghours mon 8:00 - 12:00', text)
+        self.assertIn('  workinghours tue off', text)
+
 
 class TestTjpTaskBlock(TransactionCase):
 
@@ -305,6 +376,40 @@ class TestTjpTaskBlock(TransactionCase):
         dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
         lines = self.project._tjp_task_block(dependent)
         self.assertIn(f'  depends !t{blocker.id}', lines)
+
+    def test_dependency_ss_emits_onstart_modifier(self):
+        blocker = self._task(name='Bloqueante')
+        dependent = self._task(
+            name='Dependiente', tj_dependency_type='SS',
+            depend_on_ids=[(6, 0, [blocker.id])],
+        )
+        lines = self.project._tjp_task_block(dependent)
+        self.assertIn(f'  depends !t{blocker.id} {{ onstart }}', lines)
+
+    def test_dependency_multiple_blockers_share_task_type(self):
+        """tj_dependency_type vive en la tarea, no por arista: se aplica
+        igual a todos sus bloqueantes."""
+        blocker1 = self._task(name='Bloqueante 1')
+        blocker2 = self._task(name='Bloqueante 2')
+        dependent = self._task(
+            name='Dependiente', tj_dependency_type='SS',
+            depend_on_ids=[(6, 0, [blocker1.id, blocker2.id])],
+        )
+        lines = self.project._tjp_task_block(dependent)
+        self.assertIn(f'  depends !t{blocker1.id} {{ onstart }}', lines)
+        self.assertIn(f'  depends !t{blocker2.id} {{ onstart }}', lines)
+
+    def test_dependency_ff_raises_user_error(self):
+        """Finish→Finish no tiene constraint nativo en TJ3 (depends solo
+        ancla el inicio de la tarea dependiente) — falla alto en vez de
+        exportar un .tjp que ignora en silencio la elección del usuario."""
+        blocker = self._task(name='Bloqueante')
+        dependent = self._task(
+            name='Dependiente', tj_dependency_type='FF',
+            depend_on_ids=[(6, 0, [blocker.id])],
+        )
+        with self.assertRaises(UserError):
+            self.project._tjp_task_block(dependent)
 
     def test_reports_one_per_scenario(self):
         plan = self.env['insight.scenario'].create(

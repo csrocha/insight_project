@@ -56,7 +56,6 @@ class ProjectProject(models.Model):
             ('minallocated', 'Menor carga asignada'),
             ('minloaded', 'Menor carga relativa'),
             ('maxloaded', 'Mayor carga relativa'),
-            ('mincost', 'Menor costo'),
             ('order', 'Orden de la lista'),
             ('random', 'Aleatorio'),
         ],
@@ -446,11 +445,12 @@ class ProjectProject(models.Model):
         if not employee:
             return lines
 
+        ref_date = self.date_start or fields.Date.today()
+
         calendar = employee.resource_calendar_id
         if calendar:
-            lines += self._tjp_calendar_hours(calendar)
+            lines += self._tjp_calendar_hours(calendar, employee.resource_id, ref_date)
 
-        ref_date = self.date_start or fields.Date.today()
         leaves = self.env['hr.leave'].search([
             ('employee_id', '=', employee.id),
             ('state', '=', 'validate'),
@@ -466,9 +466,17 @@ class ProjectProject(models.Model):
 
         return lines
 
-    def _tjp_calendar_hours(self, calendar):
+    def _tjp_calendar_hours(self, calendar, resource, ref_date):
+        week_type = False
+        if calendar.two_weeks_calendar:
+            week_type = str(self.env['resource.calendar.attendance'].get_week_type(ref_date))
+
         day_slots = defaultdict(list)
         for att in calendar.attendance_ids:
+            if att.display_type or (att.resource_id and att.resource_id != resource):
+                continue
+            if att.week_type and att.week_type != week_type:
+                continue
             day_slots[att.dayofweek].append((att.hour_from, att.hour_to))
 
         lines = []
@@ -534,11 +542,23 @@ class ProjectProject(models.Model):
                     duration_d = task.allocated_hours / 8.0
                     lines.append(f'{ind}  duration {duration_d:.2f}d')
 
-        # Dependencies (FS only in v1; TJ3 default dependency type)
+        # Dependencies: FS (default) and SS map to real TJ3 depends modifiers.
+        # FF has no native TJ3 constraint (depends only anchors this task's
+        # start, never its end) — fail loud instead of silently emitting FS.
+        if task.tj_dependency_type == 'FF' and any(
+            dep.project_id == self for dep in task.depend_on_ids
+        ):
+            raise UserError(_(
+                'La tarea "%s" tiene una dependencia Finish→Finish, que '
+                'todavía no está soportada por el export TJP (TaskJuggler no '
+                'tiene una forma nativa de anclar el fin de una tarea). '
+                'Cambie el tipo de dependencia a Finish→Start o Start→Start.'
+            ) % task.name)
         for dep in task.depend_on_ids:
             if dep.project_id == self:
                 dep_path = self._tjp_task_abs_path(dep)
-                lines.append(f'{ind}  depends {dep_path}')
+                suffix = ' { onstart }' if task.tj_dependency_type == 'SS' else ''
+                lines.append(f'{ind}  depends {dep_path}{suffix}')
 
         # Subtasks (recursive)
         for child in child_tasks:

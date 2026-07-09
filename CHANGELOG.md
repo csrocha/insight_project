@@ -9,6 +9,62 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.0] - 2026-07-09
+
+### Prompt
+
+> "Quiero que me presentes el pseudo algoritmo de construcción de TJP de
+> insight_project [...] y si estamos usando todas las características que
+> tenemos para explotar al máximo el TJ3 [...] Hagamos un plan para
+> aprovechar cada una de estas característica [...] Empecemos con
+> Dependencias siempre FS, como has dicho es casi trivial."
+
+### Discusión de diseño
+
+- `project.task.tj_dependency_type` (FS/SS/FF) ya existía en el modelo y
+  ya se mostraba en el form de tarea, pero `_tjp_task_block` lo ignoraba
+  por completo: siempre emitía `depends !path` sin modificador. Elegir
+  SS o FF en el form no tenía ningún efecto en el schedule — peor que no
+  tener el campo.
+- Investigando la sintaxis real de TJ3: `depends` solo puede anclar el
+  **inicio** de la tarea dependiente contra el inicio (`{ onstart }`,
+  Start→Start) o el fin (sin modificador, Finish→Start) de su
+  predecesora. No existe una forma nativa de anclar el **fin** de la
+  tarea dependiente contra nada — Finish→Finish no es un constraint
+  directo de `depends`.
+- Sí existe un truco real (no cosmético) para lograr un FF genuino: un
+  hito sintético que depende de ambas tareas combinado con
+  `scheduling alap` en la tarea dependiente, para que el motor la
+  calcule hacia atrás en vez de hacia adelante. Se descartó implementarlo
+  en este cambio porque `alap` cambia el modo de planificación de *toda*
+  la tarea (no solo la arista FF puntual) y puede interactuar de forma no
+  obvia con sus otras dependencias FS/SS — queda como un plan futuro
+  dedicado, con sus propios tests de esa interacción.
+- Mientras tanto, elegir FF debe fallar alto y claro en el export en vez
+  de exportar un `.tjp` que ignora la elección en silencio (mismo estilo
+  que el `UserError` ya existente en `_tjp_resource_id`).
+
+### Agregado
+
+- `_tjp_task_block` ahora emite `depends !path { onstart }` para
+  dependencias `tj_dependency_type='SS'` (antes: sin efecto, igual que
+  FS).
+
+### Arreglado
+
+- Elegir `tj_dependency_type='FF'` en una tarea ahora levanta un
+  `UserError` explícito al exportar/replanificar en vez de exportar un
+  `.tjp` que trata la dependencia como FS en silencio.
+
+### Tests
+
+- `test_dependency_ss_emits_onstart_modifier`,
+  `test_dependency_multiple_blockers_share_task_type` (el tipo se aplica
+  por tarea, no por arista) y `test_dependency_ff_raises_user_error` en
+  `tests/test_tjp_export.py`.
+
+---
+
 ## [17.0.9.5.1] - 2026-07-08
 
 ### Prompt
