@@ -9,6 +9,40 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.3] - 2026-07-09
+
+### Prompt
+
+> "Sigamos con el backlog de TJ3" (ítem 1 del backlog priorizado por
+> impacto en la calidad del cálculo: `priority`).
+
+### Discusión de diseño
+
+- `project.task.priority` de Odoo core es binario (`'0'` Low / `'1'`
+  High, la estrella nativa) — no la escala granular que en un principio
+  se especuló en la memoria de sesión ("¿probablemente ya tiene un campo
+  de prioridad mapeable 1:1?"). TJ3 en cambio espera un entero 1-1000
+  (default implícito 500) para desempatar contención de recursos entre
+  tareas competidoras.
+- Con una fuente binaria, no tiene sentido inventar una escala granular
+  del lado Odoo: se mapea Low → sin línea (coincide con el default
+  implícito de TJ3) y High → `priority 800`, constante fija
+  (`_TJP_HIGH_PRIORITY`) que garantiza ganar contención frente a
+  cualquier tarea en el default.
+- La línea se emite en cualquier profundidad de tarea (no solo hojas),
+  porque en TJ3 `priority` es un atributo de tarea normal, no exclusivo
+  de tareas con `effort`/`allocate`.
+
+### Agregado
+
+- `_tjp_task_block` (`project_project.py`) emite `priority 800` para
+  tareas con `priority='1'` (Important); tareas Low no emiten nada.
+- Tests en `test_tjp_export.py`: alta prioridad emite la línea, baja la
+  omite, y se aplica igual en tareas anidadas.
+- `BACKLOG.md`: se remueve el ítem de `priority` (ya resuelto).
+
+---
+
 ## [17.0.9.6.2] - 2026-07-09
 
 ### Prompt

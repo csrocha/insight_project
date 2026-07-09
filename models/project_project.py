@@ -369,6 +369,11 @@ class ProjectProject(models.Model):
         return lines
 
     _TJP_COST_ACCOUNT_ID = 'cost'
+    # TJ3 priority es un entero 1-1000, default 500 si no se declara. Solo
+    # emitimos la línea para 'Important' (task.priority nativo de Odoo es
+    # binario Low/High): 800 alcanza para que gane contención de recursos
+    # frente a cualquier tarea que se quede en el default implícito.
+    _TJP_HIGH_PRIORITY = 800
 
     def _tjp_cost_account(self):
         """Cuenta de costo declarada una sola vez para que la columna 'cost' de
@@ -514,6 +519,8 @@ class ProjectProject(models.Model):
         ind = '  ' * depth
 
         lines = [f'{ind}task {t_id} "{t_name}" {{']
+        if task.priority == '1':
+            lines.append(f'{ind}  priority {self._TJP_HIGH_PRIORITY}')
         if depth == 0:
             # chargeset se hereda a las subtareas; alcanza con declararlo una
             # sola vez en la tarea raíz para que 'cost' se acumule correctamente.

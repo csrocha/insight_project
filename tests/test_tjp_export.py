@@ -411,6 +411,28 @@ class TestTjpTaskBlock(TransactionCase):
         with self.assertRaises(UserError):
             self.project._tjp_task_block(dependent)
 
+    def test_high_priority_emits_priority_line(self):
+        task = self._task(name='Urgente', priority='1')
+        lines = self.project._tjp_task_block(task)
+        self.assertIn('  priority 800', lines)
+
+    def test_low_priority_omits_priority_line(self):
+        """Low es el default de Odoo y coincide con el default implícito de
+        TJ3 (500) — no hace falta declarar la línea."""
+        task = self._task(name='Normal', priority='0')
+        lines = self.project._tjp_task_block(task)
+        self.assertNotIn('  priority 800', '\n'.join(lines))
+        self.assertFalse(any(l.strip().startswith('priority') for l in lines))
+
+    def test_high_priority_applies_at_any_depth(self):
+        root = self._task(name='Eje', priority='1')
+        leaf = self._task(name='Cierre', parent_id=root.id, priority='1',
+                           allocated_hours=8.0, user_ids=[(6, 0, [self.u1.id])])
+        lines = self.project._tjp_task_block(root, depth=0)
+        text = '\n'.join(lines)
+        self.assertIn('  priority 800', text)
+        self.assertIn('    priority 800', text)
+
     def test_reports_one_per_scenario(self):
         plan = self.env['insight.scenario'].create(
             {'name': 'Plan', 'project_id': self.project.id, 'is_baseline': True})

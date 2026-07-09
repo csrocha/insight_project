@@ -108,6 +108,3 @@ ninguna conversación previa, quedan acá para discutir si valen la pena:
   % de avance que calcula TJ3 — el único mecanismo de "task vencida"
   hoy es el heurístico de `_cron_flag_changes_requested`
   (fecha vencida u horas agotadas en camino crítico).
-- `project.task.priority` (la estrella nativa de Odoo) no se exporta a
-  TJ3, que sí soporta prioridad para desempatar el scheduling cuando hay
-  contención de recursos.
