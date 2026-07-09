@@ -61,8 +61,11 @@ class TestTjCsvParsingHelpers(TransactionCase):
         self.assertFalse(ProjectProject._parse_tj_datetime('not-a-date', 'UTC'))
 
     def test_parse_tj_resource_ids(self):
-        self.assertEqual(ProjectProject._parse_tj_resource_ids('u12'), [12])
-        self.assertEqual(ProjectProject._parse_tj_resource_ids('u12, u34'), [12, 34])
+        # TJ3 always renders 'Full Name (u<id>)', never a bare 'u<id>' token.
+        self.assertEqual(ProjectProject._parse_tj_resource_ids('Juan Perez (u12)'), [12])
+        self.assertEqual(
+            ProjectProject._parse_tj_resource_ids('Juan Perez (u12), Maria Lopez (u34)'), [12, 34],
+        )
         self.assertEqual(ProjectProject._parse_tj_resource_ids(''), [])
         self.assertEqual(ProjectProject._parse_tj_resource_ids('bogus'), [])
 
@@ -126,7 +129,7 @@ class TestImportScenarioCsv(TransactionCase):
 
     def test_parses_resources_column_into_resource_ids(self):
         self.project._import_scenario_csv(
-            self._csv(self.task1.id, resources=f'u{self.user.id}'), self.scenario,
+            self._csv(self.task1.id, resources=f'{self.user.name} (u{self.user.id})'), self.scenario,
         )
         schedule = self.env['insight.task.schedule'].search([('task_id', '=', self.task1.id)])
         self.assertEqual(schedule.resource_ids, self.user)
@@ -277,7 +280,7 @@ class TestSyncGanttDates(TransactionCase):
 
     def test_pushes_baseline_resources_into_task_user_ids(self):
         self.project._import_scenario_csv(
-            self._csv_for(self.task, '2024-02-20', resources=f'u{self.assignee.id}'), self.baseline,
+            self._csv_for(self.task, '2024-02-20', resources=f'{self.assignee.name} (u{self.assignee.id})'), self.baseline,
         )
         self.project._sync_gantt_dates()
         self.assertEqual(self.task.user_ids, self.assignee)
@@ -285,7 +288,7 @@ class TestSyncGanttDates(TransactionCase):
     def test_non_baseline_resources_do_not_touch_task_user_ids(self):
         before = self.task.user_ids
         self.project._import_scenario_csv(
-            self._csv_for(self.task, '2099-01-01', resources=f'u{self.assignee.id}'), self.alternate,
+            self._csv_for(self.task, '2099-01-01', resources=f'{self.assignee.name} (u{self.assignee.id})'), self.alternate,
         )
         self.project._sync_gantt_dates()
         self.assertEqual(self.task.user_ids, before)

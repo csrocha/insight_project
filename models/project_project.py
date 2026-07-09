@@ -1016,20 +1016,13 @@ class ProjectProject(models.Model):
 
     @staticmethod
     def _parse_tj_resource_ids(value):
-        """Parse the taskreport 'resources' column (e.g. 'u12, u34') into
-        Odoo res.users ids — the inverse of _tjp_resource_id's 'u{user.id}'."""
+        """Parse the taskreport 'resources' column into Odoo res.users ids.
+        TJ3 renders each allocated resource as its full name followed by its
+        id in parentheses (e.g. 'Juan Perez (u12), Maria Lopez (u34)'), never
+        as a bare 'u12' token — the id must be pulled out of the parens."""
         if not value:
             return []
-        ids = []
-        for token in value.split(','):
-            token = token.strip()
-            if token.startswith('u'):
-                token = token[1:]
-            try:
-                ids.append(int(token))
-            except ValueError:
-                continue
-        return ids
+        return [int(m) for m in re.findall(r'\(u(\d+)\)', value)]
 
     # ── Gantt SVG renderer ────────────────────────────────────────────────────
 

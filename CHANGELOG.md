@@ -9,6 +9,54 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.2] - 2026-07-09
+
+### Prompt
+
+> "No entiendo que pasa. insight_project genera la siguiente exportación
+> pero no completa la tarea. Mira el caso explícito de la tarea 'Eje V:
+> Migración de Datos Históricos'." → "El import no actualiza el task en
+> Odoo" → "Pon foco en los usuarios que tienen que completar la tarea."
+
+### Discusión de diseño
+
+- Se reprodujo `tj3 3.8.4` real (contenedor `tj3-ms`) contra un `.tjp`
+  mínimo con `allocate`: la columna `resources` del `taskreport` CSV
+  **siempre** viene como `"Nombre Completo (u12)"`, nunca como el token
+  crudo `"u12"` que `_parse_tj_resource_ids` esperaba.
+- Confirmado contra la base real `fop`: de 363 registros
+  `insight.task.schedule` existentes, ninguno tenía `resource_ids`
+  poblado — el parser fallaba el `int()` sobre el string completo,
+  devolvía `[]` en silencio, y `_sync_gantt_dates` nunca llegaba a
+  escribir `user_ids`. El bug es sistémico (todos los proyectos), no
+  específico de "Eje V" — esa tarea solo lo hacía visible porque además
+  nunca tuvo `user_ids` asignado a mano.
+- `insight_import_wizard.py` (`_parse_csv_preview`) ya resolvía este
+  mismo formato correctamente vía regex — la inconsistencia entre los
+  dos caminos de import (wizard de `.tjp` externo vs. reschedule por
+  proyecto) es lo que dejó pasar el bug sin que ningún test lo
+  detectara: los fixtures de test usaban el formato viejo (`"u12"`
+  bare), no el real de TJ3.
+
+### Corregido
+
+- `_parse_tj_resource_ids` (`project_project.py`) ahora extrae el id con
+  `\(u(\d+)\)`, alineado con el formato real de TJ3 y con el parser ya
+  correcto de `insight_import_wizard.py`.
+- Fixtures de `test_tjp_schedule_import.py` y `test_scenario_selection.py`
+  actualizados al formato real (`"Nombre (uID)"`) — antes daban falsos
+  positivos al no ejercitar la columna `resources` como la devuelve TJ3.
+
+### Agregado
+
+- `BACKLOG.md`: mejoras pendientes recuperadas de `CHANGELOG.md` (FF vía
+  hito sintético + `alap`), de memoria de sesión (gaps de `depends`/
+  `note`/milestones en el wizard de import externo) y de la discusión de
+  hoy (scheduling de portfolio multi-proyecto para compartir recursos
+  entre proyectos "running").
+
+---
+
 ## [17.0.9.6.1] - 2026-07-09
 
 ### Prompt

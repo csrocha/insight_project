@@ -132,12 +132,12 @@ class TestMinResourcesStrategy(TestScenarioSelectionBase):
         t2 = self._task(name='T2')
 
         self.project._import_scenario_csv(self._csv(
-            self._row(t1, '2024-01-01', '2024-01-05', resources=f'u{self.user_a.id}'),
-            self._row(t2, '2024-01-02', '2024-01-06', resources=f'u{self.user_b.id}'),
+            self._row(t1, '2024-01-01', '2024-01-05', resources=f'Resource A (u{self.user_a.id})'),
+            self._row(t2, '2024-01-02', '2024-01-06', resources=f'Resource B (u{self.user_b.id})'),
         ), parallel)
         self.project._import_scenario_csv(self._csv(
-            self._row(t1, '2024-01-01', '2024-01-05', resources=f'u{self.user_a.id}'),
-            self._row(t2, '2024-01-05', '2024-01-10', resources=f'u{self.user_b.id}'),
+            self._row(t1, '2024-01-01', '2024-01-05', resources=f'Resource A (u{self.user_a.id})'),
+            self._row(t2, '2024-01-05', '2024-01-10', resources=f'Resource B (u{self.user_b.id})'),
         ), sequential)
 
         self.assertEqual(self.project._peak_concurrent_resources(
