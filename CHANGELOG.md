@@ -9,6 +9,38 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.1] - 2026-07-09
+
+### Prompt
+
+> "Quiero que el botón de Rescheduling aparezca también en las tareas, al
+> lado de activar tarea. Esto para que el project manager pueda modificar
+> una tarea y ver el resultado de su modificación en la tarea misma."
+
+### Discusión de diseño
+
+- `action_reschedule_project` ya existía en `project.task` y ya se
+  mostraba en los headers de kanban/tree (multi-registro), pero no en el
+  form de una tarea individual. El "▶ Activar tarea" de `work_item_task`
+  sí vive en el header del form (`project.view_task_form2`).
+- No fue necesario tocar Python: el método ya cae en el fallback
+  `self.mapped('project_id')[:1]` cuando el contexto no trae
+  `default_project_id`/`active_model` (el caso de un botón de form sobre
+  un único registro), así que desde la tarea resuelve el proyecto
+  contenedor igual que desde kanban/tree y corre `action_run_schedule()`
+  sobre él.
+- `insight_project` no depende de `work_item_task` (ni viceversa), así
+  que no hay garantía de orden exacto entre "Replanificar" y "▶ Activar
+  tarea" dentro del header — ambos quedan agregados vía
+  `position="inside"` sobre el mismo `//header`.
+
+### Agregado
+
+- Botón "Replanificar" en el header del form de `project.task`
+  (`views/project_task_views.xml`), junto al de "▶ Activar tarea".
+
+---
+
 ## [17.0.9.6.0] - 2026-07-09
 
 ### Prompt
