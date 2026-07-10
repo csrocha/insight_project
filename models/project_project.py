@@ -440,10 +440,28 @@ class ProjectProject(models.Model):
         if employee and employee.tj_daily_rate:
             lines.append(f'  rate {employee.tj_daily_rate:.2f}')
 
+        lines += self._tjp_resource_limits(employee)
         lines += self._tjp_hr_schedule(employee)
 
         lines += ['}', '']
         return lines
+
+    def _tjp_resource_limits(self, employee):
+        """Bloque `limits` opcional: topes de dedicación distintos del
+        calendario laboral (ej. alguien medio tiempo en este proyecto porque
+        el resto de su jornada va a otro proyecto que este .tjp no modela).
+        0 en cualquiera de los dos campos significa "sin tope" y no emite esa
+        línea; sin ningún tope seteado no se emite el bloque."""
+        if not employee:
+            return []
+        sub_lines = []
+        if employee.tj_daily_max_hours:
+            sub_lines.append(f'    dailymax {employee.tj_daily_max_hours:.2f}h')
+        if employee.tj_weekly_max_hours:
+            sub_lines.append(f'    weeklymax {employee.tj_weekly_max_hours:.2f}h')
+        if not sub_lines:
+            return []
+        return ['  limits {'] + sub_lines + ['  }']
 
     def _tjp_hr_schedule(self, employee):
         lines = []

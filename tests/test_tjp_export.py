@@ -210,6 +210,25 @@ class TestTjpResourceBlock(TransactionCase):
         self.assertNotIn('9:00 - 13:00', mitchell_text)
         self.assertIn('  workinghours sat 9:00 - 13:00', marc_text)
 
+    def test_daily_and_weekly_max_emit_limits_block(self):
+        self.employee_with_calendar.tj_daily_max_hours = 4.0
+        self.employee_with_calendar.tj_weekly_max_hours = 20.0
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertIn('  limits {\n    dailymax 4.00h\n    weeklymax 20.00h\n  }', text)
+        self.employee_with_calendar.tj_daily_max_hours = 0.0
+        self.employee_with_calendar.tj_weekly_max_hours = 0.0
+
+    def test_only_daily_max_emits_single_line_limits_block(self):
+        self.employee_with_calendar.tj_daily_max_hours = 6.0
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertIn('  limits {\n    dailymax 6.00h\n  }', text)
+        self.assertNotIn('weeklymax', text)
+        self.employee_with_calendar.tj_daily_max_hours = 0.0
+
+    def test_no_max_hours_omits_limits_block(self):
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertNotIn('limits', text)
+
     def test_two_weeks_calendar_uses_only_the_week_matching_the_reference_date(self):
         """Un calendario rotativo (`two_weeks_calendar`) no debe fundir las
         horas de ambas semanas en un mismo día — solo aplican las de la

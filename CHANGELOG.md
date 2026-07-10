@@ -9,6 +9,54 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.4] - 2026-07-10
+
+### Prompt
+
+> "Sigamos con el backlog de TJ3" (ítem 2 del backlog priorizado por
+> impacto en la calidad del cálculo: `limits`).
+
+### Discusión de diseño
+
+- El gap real que motiva este ítem es que un recurso compartido entre
+  proyectos concurrentes aparece con 100% de disponibilidad en cada
+  `.tjp` por separado (cada proyecto se planifica de forma aislada, ver
+  ítem 3 de `BACKLOG.md` — "scheduling de portfolio" — que sí resolvería
+  esto de raíz componiendo todos los proyectos "running" en un solo
+  `.tjp`). Mientras ese ítem más grande no se ataca, `limits` es un proxy
+  manual: declarar explícitamente cuántas horas por día/semana puede
+  dedicarle este empleado *a este proyecto puntual*, para que TJ3 no
+  asuma que tiene toda su jornada libre.
+- Sintaxis TJ3 real (`resource { limits { dailymax Xh; weeklymax Yh } }`):
+  es un bloque anidado dentro de la declaración de `resource`, con
+  sub-atributos independientes — a diferencia de `efficiency`/`rate` que
+  son líneas sueltas. Ambos sub-atributos son opcionales entre sí.
+- Se siguió el patrón ya existente de `tj_base_efficiency`/`tj_daily_rate`
+  en `hr.employee`: dos campos nuevos (`tj_daily_max_hours`,
+  `tj_weekly_max_hours`), 0.0 = sin tope (no emite esa línea). A
+  diferencia de `tj_base_efficiency` (que quedó sin vista, solo
+  accesible por código), estos dos sí se agregaron al form de empleado
+  junto a `tj_daily_rate` — sin esto el campo queda inerte para
+  cualquier usuario que no edite datos a mano.
+- Quedó fuera de alcance (para no sobre-diseñar un cap "por proyecto"
+  real): esto es un tope global del empleado que se exporta igual en
+  cualquier `.tjp` donde participe, no una dedicación distinta por
+  proyecto. Si en el futuro hace falta variar el tope por proyecto,
+  el patrón de `insight.scenario.efficiency` (override por escenario)
+  es el lugar natural para extenderlo.
+
+### Agregado
+
+- `hr.employee.tj_daily_max_hours` / `tj_weekly_max_hours` (`hr_employee.py`).
+- `_tjp_resource_limits` (`project_project.py`), llamado desde
+  `_tjp_resource_block`: emite el bloque `limits { dailymax ...;
+  weeklymax ... }` solo con los sub-atributos que tengan valor.
+- Campos visibles en el form de empleado (`hr_employee_views.xml`).
+- Tests en `test_tjp_export.py`: ambos topes juntos, solo uno, y ninguno
+  (bloque omitido).
+
+---
+
 ## [17.0.9.6.3] - 2026-07-09
 
 ### Prompt
