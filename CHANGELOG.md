@@ -9,6 +9,51 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.5] - 2026-07-10
+
+### Prompt
+
+> "Agregalo al backlog, y continua con el siguiente punto del backlog
+> TJ3" (ítem 3: feriados globales de empresa).
+
+### Discusión de diseño
+
+- Hasta ahora `_tjp_hr_schedule` solo exportaba ausencias individuales
+  (`hr.leave`, con `employee_id` propio). Un feriado que aplica a toda la
+  compañía (ej. 25 de mayo) no tiene ningún `hr.leave` asociado — cada
+  empleado lo "sufre" a través de su calendario, pero nada en el export
+  actual lo capturaba.
+- Odoo core ya modela esto: `resource.calendar.leaves` con
+  `resource_id` vacío es una ausencia general del calendario (no de un
+  recurso puntual); `resource.calendar.global_leave_ids` es el
+  one2many que expone exactamente ese subconjunto
+  (`domain=[('resource_id', '=', False)]`) sobre `resource.calendar`.
+  No hizo falta ningún modelo ni campo nuevo, solo leer un campo que ya
+  existía.
+- TJ3 ya tiene el token semánticamente correcto para esto: `leaves
+  holiday` (distinto de `leaves annual`, que se sigue usando para
+  ausencias individuales). Se comprobó en el comentario existente del
+  código (línea con la lista completa de tipos válidos de TJ3) que
+  `holiday` ya estaba contemplado ahí, solo sin uso.
+- Se filtran los feriados con `date_to` anterior a `ref_date` (mismo
+  criterio que ya usan los `hr.leave` individuales) para no acumular
+  años de feriados pasados en cada `.tjp` generado.
+
+### Agregado
+
+- `_tjp_global_leaves` (`project_project.py`), llamado desde
+  `_tjp_hr_schedule` junto al calendario del empleado: emite `leaves
+  holiday <desde> - <hasta>` por cada `resource.calendar.leaves` sin
+  `resource_id` del calendario del empleado.
+- Tests en `test_tjp_export.py`: feriado dentro del horizonte se emite,
+  feriado anterior a `date_start` del proyecto se excluye.
+- `BACKLOG.md`: se agrega el ítem "derivar `tj_daily_rate` de
+  `hr.contract.wage`" (pregunta del usuario de la sesión anterior, sin
+  implementar — ver discusión de costeo/dependencia nueva en el propio
+  archivo).
+
+---
+
 ## [17.0.9.6.4] - 2026-07-10
 
 ### Prompt

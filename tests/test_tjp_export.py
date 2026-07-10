@@ -163,6 +163,31 @@ class TestTjpResourceBlock(TransactionCase):
         self.assertIn('  workinghours sun off', text)
         self.assertIn('  leaves annual 2026-07-20 - 2026-07-22', text)
 
+    def test_global_calendar_leave_emitted_as_holiday(self):
+        """resource.calendar.leaves sin resource_id es un feriado de empresa
+        (aplica a cualquiera que use ese calendario) — se exporta como
+        `leaves holiday`, distinto del `leaves annual` individual."""
+        leave = self.env['resource.calendar.leaves'].create({
+            'name': 'Feriado nacional',
+            'calendar_id': self.calendar.id,
+            'date_from': '2026-07-09 00:00:00',
+            'date_to': '2026-07-09 23:59:59',
+        })
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertIn('  leaves holiday 2026-07-09 - 2026-07-09', text)
+        leave.unlink()
+
+    def test_global_calendar_leave_before_project_start_excluded(self):
+        leave = self.env['resource.calendar.leaves'].create({
+            'name': 'Feriado pasado',
+            'calendar_id': self.calendar.id,
+            'date_from': '2026-01-01 00:00:00',
+            'date_to': '2026-01-01 23:59:59',
+        })
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertNotIn('holiday', text)
+        leave.unlink()
+
     def test_resource_block_empty_without_employee(self):
         """A user with no linked hr.employee still gets a resource block, but
         with no schedule content — matches how externally-assigned users

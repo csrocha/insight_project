@@ -473,6 +473,7 @@ class ProjectProject(models.Model):
         calendar = employee.resource_calendar_id
         if calendar:
             lines += self._tjp_calendar_hours(calendar, employee.resource_id, ref_date)
+            lines += self._tjp_global_leaves(calendar, ref_date)
 
         leaves = self.env['hr.leave'].search([
             ('employee_id', '=', employee.id),
@@ -487,6 +488,20 @@ class ProjectProject(models.Model):
             # de la sintaxis — 'annual' es el equivalente correcto.
             lines.append(f'  leaves annual {d_from} - {d_to}')
 
+        return lines
+
+    def _tjp_global_leaves(self, calendar, ref_date):
+        """Feriados de empresa: `resource.calendar.global_leave_ids` son
+        `resource.calendar.leaves` con resource_id vacío (aplican a
+        cualquiera que use ese calendario), a diferencia de `hr.leave` que
+        es individual. Se exportan como `leaves holiday` — sin esto, TJ3
+        no tiene forma de saber que nadie trabaja esos días y planifica
+        esfuerzo sobre fechas donde en la realidad no hay nadie disponible."""
+        lines = []
+        for leave in calendar.global_leave_ids.sorted('date_from'):
+            if not leave.date_from or not leave.date_to or leave.date_to.date() < ref_date:
+                continue
+            lines.append(f'  leaves holiday {leave.date_from.date()} - {leave.date_to.date()}')
         return lines
 
     def _tjp_calendar_hours(self, calendar, resource, ref_date):

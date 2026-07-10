@@ -87,6 +87,35 @@ manual con aviso a los demás project managers?) antes de construirlo.
 
 ---
 
+## De la conversación de hoy (2026-07-10)
+
+### 4. Derivar `tj_daily_rate` de `hr.contract.wage` en vez de campo manual
+
+Hoy `hr.employee.tj_daily_rate` (`hr_employee.py`) es un campo manual sin
+ninguna vista que lo autocalcule. El usuario preguntó si no podía salir
+del contrato de trabajo del empleado — la respuesta es que el dato
+existe (`hr.contract.wage`, salario bruto mensual, vía
+`hr.employee.contract_id` que ya resuelve cuál es el contrato vigente),
+pero hay 3 fricciones que hacen que no sea un cambio chico:
+
+- **Dependencia nueva**: `hr_contract` está desinstalado hoy en la base
+  `fop` (confirmado contra `ir_module_module`) y no es dependencia de
+  `insight_project` — instalarlo es una decisión de alcance, no solo de
+  código.
+- **Conversión de unidad**: `wage` es mensual, `tj_daily_rate` es diario
+  — hace falta decidir el divisor (¿22 días fijos? ¿los días laborables
+  reales del calendario del empleado ese mes?) y si se usa bruto o un
+  costo cargado (con aportes patronales), lo cual es una política de
+  costeo que hoy no está resuelta en ningún lado del código.
+- **Contrato ausente**: qué hacer si el empleado no tiene contrato activo
+  (¿0? ¿mantener el campo manual como fallback?).
+
+_Fuente: pregunta del usuario en la sesión del ítem "limits" (2026-07-10),
+sin implementar todavía — queda para validar la política de costeo antes
+de tocar código._
+
+---
+
 ## Seguimiento operativo (no es una mejora de producto, pero quedó pendiente de hoy)
 
 - Correr un reschedule real sobre el proyecto de "Eje V" (y en general
