@@ -315,9 +315,30 @@ class TestTjpTaskBlock(TransactionCase):
         ])
         cls.u1, cls.u2, cls.u3 = cls.users
 
+        skill_type = cls.env['hr.skill.type'].create({
+            'name': 'Puesto adicional Test',
+            'skill_level_ids': [(0, 0, {
+                'name': 'Expert', 'level_progress': 100, 'default_level': True,
+            })],
+        })
+        cls.skill = cls.env['hr.skill'].create({
+            'name': 'Skill Test', 'skill_type_id': skill_type.id,
+        })
+
     def _task(self, **vals):
         vals.setdefault('project_id', self.project.id)
         return self.env['project.task'].create(vals)
+
+    def _skill_group(self, task, user_ids):
+        """Puesto adicional simultáneo con candidatos forzados a mano — el
+        matching real por skill ya se prueba en project_improve, acá solo
+        interesa cómo _tjp_allocate consume extra_skill_group_ids."""
+        group = self.env['project.task.skill.group'].create({
+            'task_id': task.id,
+            'required_skill_ids': [(6, 0, self.skill.ids)],
+        })
+        group.resource_pool_ids = [(6, 0, user_ids)]
+        return group
 
     def test_leaf_task_emits_effort_and_single_allocate(self):
         task = self._task(name='Leaf with effort', allocated_hours=40.0, user_ids=[(6, 0, [self.u1.id])])
@@ -476,6 +497,43 @@ class TestTjpTaskBlock(TransactionCase):
         text = '\n'.join(lines)
         self.assertIn('  priority 800', text)
         self.assertIn('    priority 800', text)
+
+    def test_extra_skill_group_emits_second_mandatory_allocate_entry(self):
+        task = self._task(name='Par de desarrollo', allocated_hours=16.0, user_ids=[(6, 0, [self.u1.id])])
+        self._skill_group(task, [self.u2.id])
+        text = '\n'.join(self.project._tjp_task_block(task))
+        self.assertIn(f'  allocate u{self.u1.id} {{', text)
+        self.assertIn('    mandatory', text)
+        self.assertIn(f'  }}, u{self.u2.id} {{', text)
+
+    def test_single_pool_without_extra_groups_has_no_mandatory_keyword(self):
+        """Sin extra_skill_group_ids, el output no cambia respecto a antes
+        de este feature — ni rastro de `mandatory`."""
+        task = self._task(name='Sin puestos extra', allocated_hours=8.0, user_ids=[(6, 0, [self.u1.id])])
+        self.assertNotIn('mandatory', '\n'.join(self.project._tjp_task_block(task)))
+
+    def test_extra_skill_group_without_candidates_raises(self):
+        task = self._task(name='Puesto sin cubrir', allocated_hours=8.0, user_ids=[(6, 0, [self.u1.id])])
+        group = self.env['project.task.skill.group'].create({
+            'task_id': task.id,
+            'required_skill_ids': [(6, 0, self.skill.ids)],
+        })
+        group.resource_pool_ids = [(6, 0, [])]
+        with self.assertRaises(UserError):
+            self.project._tjp_task_block(task)
+
+    def test_missing_primary_pool_with_extra_group_raises(self):
+        task = self._task(name='Sin pool principal', allocated_hours=8.0, user_ids=[(6, 0, [])])
+        self._skill_group(task, [self.u2.id])
+        with self.assertRaises(UserError):
+            self.project._tjp_task_block(task)
+
+    def test_project_users_includes_extra_skill_group_candidates(self):
+        task = self._task(name='Con puesto extra', allocated_hours=8.0, user_ids=[(6, 0, [self.u1.id])])
+        self._skill_group(task, [self.u2.id, self.u3.id])
+        project_users = self.project._tj_project_users()
+        self.assertIn(self.u2, project_users)
+        self.assertIn(self.u3, project_users)
 
     def test_reports_one_per_scenario(self):
         plan = self.env['insight.scenario'].create(

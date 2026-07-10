@@ -410,18 +410,21 @@ class ProjectProject(models.Model):
     def _tj_project_users(self):
         """res.users deduplicado a partir del pool de candidatos efectivo de
         cada tarea del proyecto (resource_pool_ids si está definido, si no
-        user_ids). Cualquier candidato potencial de una tarea necesita su
-        propio bloque `resource`, no solo quien termine asignado.
+        user_ids), más el de cada puesto adicional simultáneo
+        (extra_skill_group_ids, ver project_improve). Cualquier candidato
+        potencial de una tarea necesita su propio bloque `resource`, no solo
+        quien termine asignado.
 
         También se incluye a quien haya imputado timesheets en la tarea aunque
         no esté en ese pool: su `booking` (ver _tjp_bookings) referenciaría un
         recurso no declarado y TJ3 fallaría al parsear el .tjp. Esto no lo
         convierte en candidato para trabajo futuro — _tjp_allocate sigue
-        leyendo solo resource_pool_ids/user_ids."""
+        leyendo solo resource_pool_ids/user_ids/extra_skill_group_ids."""
         self.ensure_one()
         users = self.env['res.users']
         for task in self.task_ids:
             users |= task.resource_pool_ids or task.user_ids
+            users |= task.extra_skill_group_ids.mapped('resource_pool_ids')
             users |= task.timesheet_ids.mapped('user_id')
         return users
 
@@ -655,21 +658,65 @@ class ProjectProject(models.Model):
         """Emite el pool de candidatos de la tarea (resource_pool_ids si está
         definido, si no user_ids) como un bloque `allocate primary { alternative
         ...; select ... }`, para que TJ3 elija a una sola persona del pool en
-        vez de asignarlas todas en simultáneo."""
+        vez de asignarlas todas en simultáneo.
+
+        Si la tarea tiene puestos adicionales (extra_skill_group_ids, ver
+        project_improve), cada uno se agrega como otra entrada dentro del
+        MISMO `allocate`, marcada `mandatory`: TJ3 solo agenda una franja
+        horaria cuando TODOS los puestos mandatory están disponibles a la
+        vez, y las horas de todos cuentan contra el mismo `effort` de la
+        tarea — pensado para trabajo conjunto (pair programming, taller con
+        2 facilitadores), no para roles con cargas horarias distintas
+        dentro de la misma tarea (eso requeriría subtareas encadenadas, no
+        puestos simultáneos)."""
         pool = task.resource_pool_ids or task.user_ids
-        if not pool:
+        extra_pools = [group.resource_pool_ids for group in task.extra_skill_group_ids.sorted('sequence')]
+        if not pool and not extra_pools:
             return []
+        mandatory = bool(extra_pools)
+        selection = task.project_id.tj_allocation_selection or 'minallocated'
+
+        entries = []
+        for i, pool_n in enumerate([pool] + extra_pools):
+            if not pool_n:
+                if i == 0:
+                    raise UserError(_(
+                        'La tarea "%s" tiene puestos adicionales '
+                        '(extra_skill_group_ids) pero ningún candidato en '
+                        'su pool principal (resource_pool_ids/user_ids) — '
+                        'sin al menos un candidato ahí, esa franja nunca '
+                        'podría agendarse.'
+                    ) % task.name)
+                raise UserError(_(
+                    'La tarea "%s" tiene un puesto adicional sin ningún '
+                    'candidato disponible (revise sus skills requeridas o '
+                    'el roster de candidatos del proyecto) — no se puede '
+                    'agendar.'
+                ) % task.name)
+            entries.append(self._tjp_allocate_entry_lines(pool_n, selection, mandatory))
+
+        lines = [f'allocate {entries[0][0]}'] + entries[0][1:]
+        for entry in entries[1:]:
+            lines[-1] = f'{lines[-1]}, {entry[0]}'
+            lines += entry[1:]
+        return lines
+
+    def _tjp_allocate_entry_lines(self, pool, selection, mandatory):
+        """Una entrada de `allocate` (candidato principal + alternativas +
+        criterio de selección + `mandatory` opcional), sin la palabra clave
+        `allocate` — _tjp_allocate combina una o más de estas en un solo
+        bloque `allocate a, b, c`."""
         ids = [self._tjp_resource_id(u.partner_id.id) for u in pool]
         primary, *alternatives = ids
-        if not alternatives:
-            return [f'allocate {primary}']
-        selection = task.project_id.tj_allocation_selection or 'minallocated'
-        return [
-            f'allocate {primary} {{',
-            f'  alternative {", ".join(alternatives)}',
-            f'  select {selection}',
-            '}',
-        ]
+        body = []
+        if alternatives:
+            body.append(f'  alternative {", ".join(alternatives)}')
+            body.append(f'  select {selection}')
+        if mandatory:
+            body.append('  mandatory')
+        if not body:
+            return [primary]
+        return [f'{primary} {{'] + body + ['}']
 
     def _tjp_reports(self, scenarios=None):
         """One taskreport per scenario so each CSV file maps to exactly one scenario."""

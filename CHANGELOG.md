@@ -9,6 +9,58 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.6] - 2026-07-10
+
+### Prompt
+
+> "Sigamos con el backlog de TJ3" (ítem "allocate con múltiples roles
+> obligatorios por tarea") → tras confirmar semántica ("roles
+> simultáneos, mismo esfuerzo") y descartar el concepto de "roles" en
+> favor de generalizar el matching por skills ya existente (ver
+> `project_improve` [17.0.1.1.2]).
+
+### Discusión de diseño
+
+- Se investigó la sintaxis real de `allocate` leyendo el código fuente
+  del gem `taskjuggler` 3.8.4 que corre en `tj3-ms` (mismo patrón que el
+  caso FF: no asumir, confirmar contra el motor real). Hallazgo clave:
+  varias entradas `allocate a, b { mandatory }` dentro de un mismo
+  `allocate` agendan una franja solo cuando **todos** los mandatorios
+  están disponibles a la vez, y sus horas se acumulan contra el **mismo**
+  `effort` de la tarea — el usuario confirmó que ese es exactamente el
+  caso de uso que quería (trabajo conjunto tipo pair programming, no
+  roles con distinta carga horaria dentro de la misma tarea).
+- Se validó el `.tjp` generado contra el binario real `tj3` (no solo la
+  gramática): un `allocate u1 { mandatory }, u2 { mandatory }` con
+  `effort 2d` programó a ambos recursos el mismo día, confirmando el
+  comportamiento esperado antes de dar por buena la sintaxis de salida.
+- `_tjp_allocate` ahora arma una lista de "entradas" (candidato principal
+  + alternativas + `select` + `mandatory` opcional) y las combina en un
+  solo `allocate`. Se verificó explícitamente que el camino sin
+  `extra_skill_group_ids` (el caso común, miles de tareas existentes)
+  produce carácter por carácter la misma salida que antes — cero
+  `mandatory`, cero cambio de formato.
+- Si una tarea tiene puestos adicionales pero su pool principal
+  (`resource_pool_ids`/`user_ids`) o alguno de los puestos extra queda
+  sin candidatos, se falla alto (`UserError`) en vez de agendar una
+  franja que nunca podría cubrirse (mandatory con cero candidatos
+  bloquearía el schedule en silencio).
+
+### Agregado
+
+- `_tjp_allocate`/`_tjp_allocate_entry_lines` (`project_project.py`):
+  soporte para `task.extra_skill_group_ids` (ver `project_improve`
+  [17.0.1.1.2]) como entradas `mandatory` adicionales del mismo
+  `allocate`.
+- `_tj_project_users` incluye también los candidatos de cada puesto
+  adicional (necesitan su propio bloque `resource`).
+- Tests en `test_tjp_export.py`: segunda entrada mandatory, sin cambio de
+  formato cuando no hay puestos extra, error si el pool principal o un
+  puesto extra queda sin candidatos, candidatos de puestos extra
+  incluidos en `_tj_project_users`.
+
+---
+
 ## [17.0.9.6.5] - 2026-07-10
 
 ### Prompt
