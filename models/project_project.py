@@ -674,6 +674,7 @@ class ProjectProject(models.Model):
         if not pool and not extra_pools:
             return []
         mandatory = bool(extra_pools)
+        persistent = bool(task.tj_persistent_allocation)
         selection = task.project_id.tj_allocation_selection or 'minallocated'
 
         entries = []
@@ -693,7 +694,7 @@ class ProjectProject(models.Model):
                     'el roster de candidatos del proyecto) — no se puede '
                     'agendar.'
                 ) % task.name)
-            entries.append(self._tjp_allocate_entry_lines(pool_n, selection, mandatory))
+            entries.append(self._tjp_allocate_entry_lines(pool_n, selection, mandatory, persistent))
 
         lines = [f'allocate {entries[0][0]}'] + entries[0][1:]
         for entry in entries[1:]:
@@ -701,17 +702,24 @@ class ProjectProject(models.Model):
             lines += entry[1:]
         return lines
 
-    def _tjp_allocate_entry_lines(self, pool, selection, mandatory):
+    def _tjp_allocate_entry_lines(self, pool, selection, mandatory, persistent):
         """Una entrada de `allocate` (candidato principal + alternativas +
-        criterio de selección + `mandatory` opcional), sin la palabra clave
-        `allocate` — _tjp_allocate combina una o más de estas en un solo
-        bloque `allocate a, b, c`."""
+        criterio de selección + `persistent`/`mandatory` opcionales), sin la
+        palabra clave `allocate` — _tjp_allocate combina una o más de estas
+        en un solo bloque `allocate a, b, c`.
+
+        `persistent` solo tiene efecto real con alternativas (fuerza que,
+        una vez elegida una persona de la lista, siga siendo esa hasta el
+        final); sin alternativas no hay nada entre qué persistir, así que
+        no se emite."""
         ids = [self._tjp_resource_id(u.partner_id.id) for u in pool]
         primary, *alternatives = ids
         body = []
         if alternatives:
             body.append(f'  alternative {", ".join(alternatives)}')
             body.append(f'  select {selection}')
+            if persistent:
+                body.append('  persistent')
         if mandatory:
             body.append('  mandatory')
         if not body:

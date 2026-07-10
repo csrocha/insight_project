@@ -373,6 +373,39 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn('    select order', '\n'.join(lines))
         self.project.tj_allocation_selection = 'minallocated'
 
+    def test_persistent_allocation_emits_persistent_line_with_alternatives(self):
+        task = self._task(
+            name='Persistente con alternativas',
+            allocated_hours=40.0,
+            user_ids=[(6, 0, [self.u1.id, self.u2.id])],
+            tj_persistent_allocation=True,
+        )
+        lines = self.project._tjp_task_block(task)
+        text = '\n'.join(lines)
+        self.assertIn(f'  allocate u{self.u1.id} {{', text)
+        self.assertIn('    persistent', text)
+
+    def test_persistent_flag_without_alternatives_emits_nothing(self):
+        """Sin alternativas no hay nada entre qué persistir — TJ3 no gana
+        nada con la línea, así que no se emite."""
+        task = self._task(
+            name='Persistente sin alternativas',
+            allocated_hours=40.0,
+            user_ids=[(6, 0, [self.u1.id])],
+            tj_persistent_allocation=True,
+        )
+        lines = self.project._tjp_task_block(task)
+        self.assertNotIn('persistent', '\n'.join(lines))
+
+    def test_persistent_off_by_default_even_with_alternatives(self):
+        task = self._task(
+            name='Con alternativas, flag default',
+            allocated_hours=40.0,
+            user_ids=[(6, 0, [self.u1.id, self.u2.id])],
+        )
+        lines = self.project._tjp_task_block(task)
+        self.assertNotIn('persistent', '\n'.join(lines))
+
     def test_resource_pool_ids_overrides_user_ids_for_allocation(self):
         """resource_pool_ids (el pool de candidatos, potencialmente derivado
         de skills en project_improve) manda sobre user_ids al exportar."""

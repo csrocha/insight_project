@@ -9,6 +9,43 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.7] - 2026-07-10
+
+### Prompt
+
+> "Sigamos con el backlog de TJ3" (ítem "sin `persistent` en `allocate`").
+
+### Discusión de diseño
+
+- Confirmado en el mismo código fuente del gem `taskjuggler` usado para
+  el ítem anterior: `persistent` es un atributo suelto dentro del bloque
+  de una entrada de `allocate` (mismo nivel que `alternative`/`select`/
+  `mandatory`) — "una vez elegido un recurso de la lista de
+  alternativas, se usa para toda la tarea" en vez de poder cambiar en
+  cada corte donde nadie estaba disponible.
+- Validado contra el binario real `tj3`: una tarea con 2 candidatos
+  alternativos y `persistent` mantuvo al mismo recurso durante toda la
+  tarea (sin la línea, TJ3 podría alternar entre cortes).
+- Solo tiene sentido con alternativas — sin ellas no hay "lista" entre
+  la cual persistir. `_tjp_allocate_entry_lines` no emite la línea si el
+  pool no tiene alternativas, aunque el flag esté prendido, para no
+  ensuciar el `.tjp` con un atributo sin efecto.
+- Es un flag por tarea (no por escenario ni por candidato individual):
+  se guarda en `project.task.tj_persistent_allocation` — cambio chico,
+  sin nuevo modelo, siguiendo el mismo patrón que `tj_dependency_type`.
+
+### Agregado
+
+- `project.task.tj_persistent_allocation` (Boolean, `project_task.py`),
+  visible en el form de Tarea junto a `tj_dependency_type`.
+- `_tjp_allocate`/`_tjp_allocate_entry_lines` (`project_project.py`):
+  emiten `persistent` en cada entrada del `allocate` cuando el flag está
+  activo y esa entrada tiene alternativas.
+- Tests en `test_tjp_export.py`: emite con alternativas + flag, no emite
+  sin alternativas aunque el flag esté prendido, no emite por default.
+
+---
+
 ## [17.0.9.6.6] - 2026-07-10
 
 ### Prompt

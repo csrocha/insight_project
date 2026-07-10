@@ -11,6 +11,7 @@
             </xpath>
             <xpath expr="//field[@name='tag_ids']" position="after">
                 <field name="tj_dependency_type"/>
+                <field name="tj_persistent_allocation"/>
             </xpath>
             <xpath expr="//notebook" position="inside">
                 <page string="Schedule" name="schedule">

@@ -17,6 +17,16 @@ class ProjectTask(models.Model):
         string='Tipo de dependencia TJ',
         default='FS',
     )
+    tj_persistent_allocation = fields.Boolean(
+        string='Persistir recurso asignado (TJ)',
+        help='Con más de un candidato posible (alternativas), TJ3 puede '
+             'cambiar de persona entre segmentos no contiguos de la misma '
+             'tarea (después de cada corte donde nadie estaba disponible). '
+             'Marcar esto fuerza que, una vez elegida una persona de la '
+             'lista, siga siendo esa hasta el final de la tarea '
+             '(equivalente a la línea "persistent" de TJ3). Sin '
+             'alternativas no tiene efecto.',
+    )
     start_scheduled = fields.Datetime(
         string='Inicio planificado', compute='_compute_scheduled', store=True,
     )
