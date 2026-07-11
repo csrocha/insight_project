@@ -9,6 +9,92 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.10] - 2026-07-11
+
+### Prompt
+
+> "Sabes porque realmente no avanzo en el punto Finish-Finish? Porque el
+> tipo de dependencia lo tiene la tarea y no la tiene la relación entre
+> tarea y tarea?" → resuelto el prerequisito (v17.0.9.6.9) → "Ah! Creo
+> que para prevenir problemas de usabilidad es mejor sacar FF de la
+> general y solo dejarlo en las aristas" → "Revisa todas las
+> combinaciones posibles y así confirmamos funcionamiento. Luego
+> implementa los tests [...] el objetivo es validar la construcción de
+> tjp cumpliendo la semántica esperada para combinación de tareas, orden,
+> tipos de tareas, comienzo, fin y esfuerzo." — con la aclaración
+> explícita de que los tests del addon NO deben depender del servicio
+> real de TJ3 (solo warning si no está disponible; en la práctica: la
+> exploración empírica la hace el agente por su cuenta contra `tj3-ms`,
+> y el addon solo pinnea el `.tjp` de texto ya validado).
+
+### Discusión de diseño
+
+- **FF ya no es una opción de `tj_dependency_type`** (el default de la
+  tarea) — pasa a ser Selection `[FS, SS]` únicamente. Como default
+  general no tenía sentido (¿"todos los bloqueantes de esta tarea son
+  FF"? casi nunca es lo que alguien quiere), y ahora que FF sí funciona
+  de verdad, dejarlo elegible ahí era una trampa de usabilidad. FF sigue
+  disponible, pero solo como override puntual en
+  `insight.task.dependency.dependency_type`. Migración
+  (`migrations/17.0.9.6.10/pre-migrate.py`) lleva cualquier
+  `tj_dependency_type='FF'` preexistente a `'FS'` (nunca fue funcional
+  de todos modos, siempre fallaba al exportar).
+- **La sintaxis real de FF se encontró por exploración empírica directa
+  contra el binario `tj3` corriendo en `tj3-ms`** (no contra el addon):
+  se armaron ~30 archivos `.tjp` de prueba variando tipo de dependencia,
+  orden de declaración, duración relativa de las tareas (corta bloquea
+  larga y viceversa), anidamiento, cadenas, y combinaciones con
+  `mandatory`/recursos compartidos, revisando el schedule real devuelto
+  en cada caso. El plan original del backlog (hito sintético + `alap`
+  explícito) resultó **innecesario**: alcanza con
+  `precedes {bloqueante} { onend }` declarado en la propia tarea
+  dependiente — `precedes` ya fuerza `alap` por su cuenta.
+- Dos reglas duras que la exploración reveló (ninguna deducible de la
+  sintaxis o la documentación en prosa del gem, que en este punto es
+  ambigua/imprecisa):
+  1. **Orden de declaración**: si `precedes {onend}` se declara antes que
+     los `depends` FS/SS de la misma tarea, TJ3 rechaza el archivo
+     ("Tasks with on-end dependencies must be ALAP scheduled") — la
+     última política declarada (ASAP/ALAP) gana. El export ahora
+     siempre emite todos los `depends` antes que el `precedes`,
+     independientemente del orden de `depend_on_ids` en Odoo.
+  2. **Como máximo una arista FF por tarea**: con dos o más
+     `precedes {onend}` en la misma tarea (probado con líneas separadas
+     y con lista por comas — mismo resultado en ambas), TJ3 3.8.4 solo
+     respeta la primera y **ignora la segunda en silencio**, sin error
+     ni warning. Detectado comparando fechas resultantes contra lo
+     esperado, no por ningún mensaje de TJ3. El export ahora falla loud
+     (`UserError`) si detecta más de una arista FF por tarea.
+- Se confirmó que **Start→Finish (SF) no es alcanzable** con ninguna
+  combinación de `depends`/`precedes`: `depends` siempre ancla el INICIO
+  de la tarea declarante (nunca su fin); `precedes` siempre se origina
+  desde el FIN de la tarea declarante (nunca su inicio) — entre ambos
+  cubren FS/SS/FF pero estructuralmente no hay forma de expresar "mi fin
+  depende del inicio de otra tarea". Queda fuera de alcance, no por
+  decisión de producto sino porque el motor no lo soporta.
+- Validado además: cadenas de FF (A→B→C) y FF con tareas anidadas
+  (subtareas) propagan correctamente; FF mezclado con FS o con SS en la
+  misma tarea funciona sin corromper ninguna de las dos restricciones
+  (verificado con fechas reales, incluyendo un caso de restricción
+  imposible que falla limpio en vez de agendar algo incorrecto).
+  Validación end-to-end final: proyecto Odoo real → `_generate_tjp()` →
+  binario real de `tj3-ms` → el schedule resultante respeta
+  simultáneamente una arista FS y una FF en la misma tarea.
+
+### Agregado
+
+- `_tjp_task_block` (`project_project.py`): aristas FF emiten
+  `precedes {path} { onend }` (siempre después de los `depends`
+  FS/SS); más de una arista FF por tarea falla con `UserError` explícito.
+- `project.task.tj_dependency_type`: ya no acepta `'FF'` (solo `FS`/`SS`);
+  FF sigue disponible vía `insight.task.dependency.dependency_type`.
+- Migración `migrations/17.0.9.6.10/pre-migrate.py`.
+- Tests en `test_tjp_export.py`: FF simple, FF mezclado con FS (orden de
+  salida correcto), FF mezclado con SS, dos FF en la misma tarea (falla),
+  FF ya no seleccionable como default de tarea.
+
+---
+
 ## [17.0.9.6.9] - 2026-07-11
 
 ### Prompt

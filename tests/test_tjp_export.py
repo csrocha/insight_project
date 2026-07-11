@@ -499,17 +499,15 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn(f'  depends !t{blocker1.id} {{ onstart }}', lines)
         self.assertIn(f'  depends !t{blocker2.id} {{ onstart }}', lines)
 
-    def test_dependency_ff_raises_user_error(self):
-        """Finish→Finish no tiene constraint nativo en TJ3 (depends solo
-        ancla el inicio de la tarea dependiente) — falla alto en vez de
-        exportar un .tjp que ignora en silencio la elección del usuario."""
+    def test_ff_not_selectable_as_task_level_default(self):
+        """FF no es un default razonable para todos los bloqueantes de una
+        tarea — solo tiene sentido como override puntual de una arista
+        (ver dependency_type_ids), así que ni siquiera es una opción
+        válida de tj_dependency_type."""
         blocker = self._task(name='Bloqueante')
-        dependent = self._task(
-            name='Dependiente', tj_dependency_type='FF',
-            depend_on_ids=[(6, 0, [blocker.id])],
-        )
-        with self.assertRaises(UserError):
-            self.project._tjp_task_block(dependent)
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        with self.assertRaises(ValueError):
+            dependent.tj_dependency_type = 'FF'
 
     def test_dependency_type_override_applies_only_to_its_own_edge(self):
         """Un override en dependency_type_ids cambia el tipo de UNA arista
@@ -529,15 +527,75 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn(f'  depends !t{blocker2.id}', lines)
         self.assertNotIn(f'  depends !t{blocker2.id} {{ onstart }}', lines)
 
-    def test_dependency_type_override_ff_raises_even_with_fs_task_default(self):
-        blocker1 = self._task(name='Bloqueante FF')
-        blocker2 = self._task(name='Bloqueante FS')
+    def test_dependency_type_override_ff_emits_precedes_onend(self):
+        """FF real (sin hito sintético): `precedes {path} { onend }`,
+        confirmado contra el binario real de tj3-ms (ver CHANGELOG) — ancla
+        el FIN de esta tarea al fin del bloqueante."""
+        blocker = self._task(name='Bloqueante FF')
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        self.env['insight.task.dependency'].create({
+            'task_id': dependent.id, 'depends_on_id': blocker.id, 'dependency_type': 'FF',
+        })
+        lines = self.project._tjp_task_block(dependent)
+        self.assertIn(f'  precedes !t{blocker.id} {{ onend }}', lines)
+        self.assertFalse(any(l.strip().startswith('depends') for l in lines))
+
+    def test_dependency_type_mixed_fs_and_ff_depends_before_precedes(self):
+        """Regla dura confirmada empíricamente: si `precedes` se declara
+        antes que `depends` en el bloque de la tarea, TJ3 rechaza el
+        archivo ('Tasks with on-end dependencies must be ALAP scheduled')
+        porque la última política declarada (ASAP/ALAP) gana. El export
+        tiene que emitir siempre los `depends` FS/SS antes que el
+        `precedes` FF, sea cual sea el orden de los bloqueantes en Odoo."""
+        blocker_ff = self._task(name='Bloqueante FF')
+        blocker_fs = self._task(name='Bloqueante FS')
         dependent = self._task(
             name='Dependiente mixto', tj_dependency_type='FS',
+            # FF primero en depend_on_ids a propósito, para probar que el
+            # orden de salida no depende del orden de entrada.
+            depend_on_ids=[(6, 0, [blocker_ff.id, blocker_fs.id])],
+        )
+        self.env['insight.task.dependency'].create({
+            'task_id': dependent.id, 'depends_on_id': blocker_ff.id, 'dependency_type': 'FF',
+        })
+        lines = self.project._tjp_task_block(dependent)
+        depends_idx = next(i for i, l in enumerate(lines) if l.strip().startswith('depends'))
+        precedes_idx = next(i for i, l in enumerate(lines) if l.strip().startswith('precedes'))
+        self.assertLess(depends_idx, precedes_idx,
+                         'depends debe ir antes que precedes en el bloque de la tarea')
+        self.assertIn(f'  depends !t{blocker_fs.id}', lines)
+        self.assertIn(f'  precedes !t{blocker_ff.id} {{ onend }}', lines)
+
+    def test_dependency_type_mixed_ss_and_ff(self):
+        blocker_ff = self._task(name='Bloqueante FF')
+        blocker_ss = self._task(name='Bloqueante SS')
+        dependent = self._task(
+            name='Dependiente SS+FF', tj_dependency_type='SS',
+            depend_on_ids=[(6, 0, [blocker_ss.id, blocker_ff.id])],
+        )
+        self.env['insight.task.dependency'].create({
+            'task_id': dependent.id, 'depends_on_id': blocker_ff.id, 'dependency_type': 'FF',
+        })
+        lines = self.project._tjp_task_block(dependent)
+        self.assertIn(f'  depends !t{blocker_ss.id} {{ onstart }}', lines)
+        self.assertIn(f'  precedes !t{blocker_ff.id} {{ onend }}', lines)
+
+    def test_dependency_type_two_ff_blockers_raises(self):
+        """TJ3 3.8.4 solo respeta un `precedes { onend }` por tarea — con
+        dos, ignora el segundo en silencio (confirmado empíricamente, tanto
+        con líneas separadas como con lista por comas). Falla loud en vez
+        de exportar un .tjp que TJ3 agenda mal sin avisar."""
+        blocker1 = self._task(name='Bloqueante FF 1')
+        blocker2 = self._task(name='Bloqueante FF 2')
+        dependent = self._task(
+            name='Dependiente con dos FF',
             depend_on_ids=[(6, 0, [blocker1.id, blocker2.id])],
         )
         self.env['insight.task.dependency'].create({
             'task_id': dependent.id, 'depends_on_id': blocker1.id, 'dependency_type': 'FF',
+        })
+        self.env['insight.task.dependency'].create({
+            'task_id': dependent.id, 'depends_on_id': blocker2.id, 'dependency_type': 'FF',
         })
         with self.assertRaises(UserError):
             self.project._tjp_task_block(dependent)

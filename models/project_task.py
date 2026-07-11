@@ -13,22 +13,25 @@ class ProjectTask(models.Model):
         string='Camino crítico', compute='_compute_scheduled', store=True,
     )
     tj_dependency_type = fields.Selection(
-        [('FS', 'Finish→Start'), ('SS', 'Start→Start'), ('FF', 'Finish→Finish')],
+        [('FS', 'Finish→Start'), ('SS', 'Start→Start')],
         string='Tipo de dependencia TJ',
         default='FS',
         help='Default aplicado a todos los bloqueantes de depend_on_ids que '
              'no tengan su propio override en dependency_type_ids — la '
              'mayoría de las tareas tiene un solo tipo de dependencia, así '
-             'que alcanza con este campo. Para mezclar tipos distintos '
-             'entre bloqueantes de la misma tarea, agregar un override '
-             'puntual en "Tipo de dependencia por bloqueante".',
+             'que alcanza con este campo. No incluye Finish→Finish a '
+             'propósito: FF es un caso puntual entre dos tareas específicas '
+             '(no un "default" razonable para todos los bloqueantes de una '
+             'tarea), así que solo está disponible como override en "Tipo '
+             'de dependencia por bloqueante".',
     )
     dependency_type_ids = fields.One2many(
         'insight.task.dependency', 'task_id',
         string='Tipo de dependencia por bloqueante',
         help='Override de tj_dependency_type para bloqueantes puntuales — '
              'sin ningún override acá, todos los bloqueantes de '
-             'depend_on_ids usan tj_dependency_type por igual.',
+             'depend_on_ids usan tj_dependency_type por igual. Es también '
+             'el único lugar donde se puede elegir Finish→Finish.',
     )
     tj_persistent_allocation = fields.Boolean(
         string='Persistir recurso asignado (TJ)',

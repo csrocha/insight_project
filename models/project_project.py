@@ -593,28 +593,48 @@ class ProjectProject(models.Model):
                     duration_d = task.allocated_hours / 8.0
                     lines.append(f'{ind}  duration {duration_d:.2f}d')
 
-        # Dependencies: FS (default) and SS map to real TJ3 depends modifiers.
-        # El tipo es por arista (dependency_type_ids, ver project_task.py),
-        # con tj_dependency_type de la tarea como default cuando una arista
-        # no tiene override propio — así una misma tarea puede mezclar FS
-        # con un bloqueante y SS con otro. FF no tiene constraint nativo en
-        # TJ3 (depends solo ancla el inicio de esta tarea, nunca su fin) —
-        # falla loud en esa arista puntual en vez de silenciarla como FS.
+        # Dependencies: FS (default) y SS mapean a `depends`/`depends {
+        # onstart }` (ancla el INICIO de esta tarea). FF mapea a `precedes
+        # {path} { onend }` (ancla el FIN de esta tarea al fin del
+        # bloqueante) — confirmado contra el binario real de tj3-ms, sin
+        # hito sintético ni `alap` explícito: `precedes` ya fuerza ALAP por
+        # su cuenta. El tipo es por arista (dependency_type_ids, ver
+        # project_task.py), con tj_dependency_type de la tarea como default
+        # cuando una arista no tiene override propio.
+        #
+        # Dos reglas duras confirmadas empíricamente, no deducibles de la
+        # sintaxis sola:
+        # 1) Los `depends` deben ir ANTES que el `precedes` en el bloque —
+        #    si se declaran en el orden inverso, TJ3 rechaza el archivo
+        #    ("Tasks with on-end dependencies must be ALAP scheduled"),
+        #    porque "la última política declarada gana" (ASAP vs ALAP).
+        # 2) TJ3 3.8.4 solo respeta UN `precedes { onend }` por tarea — con
+        #    dos o más, el segundo se ignora en silencio (probado con líneas
+        #    separadas y con lista por comas, mismo resultado en ambas). Por
+        #    eso como máximo una arista FF por tarea; más de una falla loud
+        #    en vez de exportar un .tjp que TJ3 agenda mal sin avisar.
+        ff_dep = None
         for dep in task.depend_on_ids:
             if dep.project_id != self:
                 continue
             dep_type = task._tj_dependency_type_for(dep)
             if dep_type == 'FF':
-                raise UserError(_(
-                    'La dependencia de "%(task)s" hacia "%(dep)s" es '
-                    'Finish→Finish, que todavía no está soportada por el '
-                    'export TJP (TaskJuggler no tiene una forma nativa de '
-                    'anclar el fin de una tarea). Cambie esa arista a '
-                    'Finish→Start o Start→Start.'
-                ) % {'task': task.name, 'dep': dep.name})
+                if ff_dep is not None:
+                    raise UserError(_(
+                        'La tarea "%(task)s" tiene más de una dependencia '
+                        'Finish→Finish ("%(dep1)s" y "%(dep2)s"). TJ3 solo '
+                        'respeta una por tarea (con más de una, ignora la '
+                        'segunda en silencio) — deje una sola arista FF por '
+                        'tarea.'
+                    ) % {'task': task.name, 'dep1': ff_dep.name, 'dep2': dep.name})
+                ff_dep = dep
+                continue
             dep_path = self._tjp_task_abs_path(dep)
             suffix = ' { onstart }' if dep_type == 'SS' else ''
             lines.append(f'{ind}  depends {dep_path}{suffix}')
+        if ff_dep is not None:
+            ff_path = self._tjp_task_abs_path(ff_dep)
+            lines.append(f'{ind}  precedes {ff_path} {{ onend }}')
 
         # Subtasks (recursive)
         for child in child_tasks:
