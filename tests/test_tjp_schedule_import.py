@@ -47,6 +47,12 @@ class TestTjCsvParsingHelpers(TransactionCase):
         self.assertFalse(ProjectProject._parse_tj_criticalness(''))
         self.assertFalse(ProjectProject._parse_tj_criticalness('not-a-number'))
 
+    def test_parse_tj_complete(self):
+        self.assertEqual(ProjectProject._parse_tj_complete('62%'), 62.0)
+        self.assertEqual(ProjectProject._parse_tj_complete('100%'), 100.0)
+        self.assertEqual(ProjectProject._parse_tj_complete(''), 0.0)
+        self.assertEqual(ProjectProject._parse_tj_complete('not-a-number%'), 0.0)
+
     def test_parse_tj_datetime_date_only(self):
         dt = ProjectProject._parse_tj_datetime('2024-01-15', 'UTC')
         self.assertEqual(dt.strftime('%Y-%m-%d'), '2024-01-15')
@@ -90,10 +96,11 @@ class TestImportScenarioCsv(TransactionCase):
         })
 
     @staticmethod
-    def _csv(task_id, bsi='1', start='2024-01-01', end='2024-01-10', effort='5.0d', duration='5.0d', crit='0', resources=''):
+    def _csv(task_id, bsi='1', start='2024-01-01', end='2024-01-10', effort='5.0d', duration='5.0d',
+             crit='0', resources='', complete=''):
         return (
-            '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness"\n'
-            f'"t{task_id}";"{bsi}";"Task";"{start}";"{end}";"{effort}";"{duration}";"{resources}";"{crit}"\n'
+            '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness";"Completion"\n'
+            f'"t{task_id}";"{bsi}";"Task";"{start}";"{end}";"{effort}";"{duration}";"{resources}";"{crit}";"{complete}"\n'
         )
 
     def test_creates_schedule_record_from_csv_row(self):
@@ -126,6 +133,20 @@ class TestImportScenarioCsv(TransactionCase):
         self.project._import_scenario_csv(self._csv(self.task1.id, crit='55'), self.scenario)
         schedule = self.env['insight.task.schedule'].search([('task_id', '=', self.task1.id)])
         self.assertTrue(schedule.is_critical_path)
+
+    def test_parses_completion_column_into_complete(self):
+        self.project._import_scenario_csv(self._csv(self.task1.id, complete='62%'), self.scenario)
+        schedule = self.env['insight.task.schedule'].search([('task_id', '=', self.task1.id)])
+        self.assertEqual(schedule.complete, 62.0)
+
+    def test_missing_completion_column_defaults_to_zero(self):
+        csv_content = (
+            'Id,Bsi,Name,Start,End,Effort,Duration,Resources,Criticalness\n'
+            f't{self.task1.id},1,Task,2024-01-01,2024-01-10,5.0d,5.0d,,0\n'
+        )
+        self.project._import_scenario_csv(csv_content, self.scenario)
+        schedule = self.env['insight.task.schedule'].search([('task_id', '=', self.task1.id)])
+        self.assertEqual(schedule.complete, 0.0)
 
     def test_parses_resources_column_into_resource_ids(self):
         self.project._import_scenario_csv(

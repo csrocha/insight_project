@@ -435,6 +435,7 @@ class TestTjpTaskBlock(TransactionCase):
         lines = self.project._tjp_task_block(task)
         self.assertEqual(lines, [
             f'task t{task.id} "Hito sin esfuerzo" {{',
+            '  complete 0.00',
             '  chargeset cost',
             '}',
             '',
@@ -680,6 +681,30 @@ class TestTjpBookings(TransactionCase):
         self.assertIn(f'  booking u{helper_user.id} 2026-06-30 +3.00h', text)
         # No se lo agrega como candidato de asignación futura de la tarea.
         self.assertNotIn(f'allocate u{helper_user.id}', text)
+
+    def test_complete_reflects_task_progress(self):
+        """complete no lo calcula TJ3 (ver discusión de diseño en el
+        CHANGELOG) — es un espejo de project.task.progress (horas
+        imputadas / allocated_hours) al momento del export."""
+        task = self._task(name='A mitad de camino', allocated_hours=10.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 5.0)
+        self.assertEqual(task.progress, 50.0)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn('  complete 50.00', lines)
+
+    def test_complete_clamped_to_100_with_overtime(self):
+        """task.progress puede superar 100 (overtime); TJ3 rechaza
+        `complete` fuera de [0, 100], así que se clampea."""
+        task = self._task(name='Con overtime', allocated_hours=5.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 8.0)
+        self.assertGreater(task.progress, 100.0)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn('  complete 100.00', lines)
+
+    def test_complete_zero_without_any_hours_logged(self):
+        task = self._task(name='Sin avance', allocated_hours=10.0, user_ids=[(6, 0, [self.user.id])])
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn('  complete 0.00', lines)
 
 
 class TestTjpMilestoneBlock(TransactionCase):

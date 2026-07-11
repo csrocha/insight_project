@@ -63,7 +63,7 @@ class TestRenderGanttSvgWithData(TransactionCase):
             'name': 'Normal Task', 'project_id': cls.project.id,
         })
 
-    def _schedule(self, task, scenario, start, end, bsi, critical=False):
+    def _schedule(self, task, scenario, start, end, bsi, critical=False, complete=0.0):
         return self.env['insight.task.schedule'].create({
             'task_id': task.id,
             'scenario_id': scenario.id,
@@ -71,6 +71,7 @@ class TestRenderGanttSvgWithData(TransactionCase):
             'end_scheduled': end,
             'bsi': bsi,
             'is_critical_path': critical,
+            'complete': complete,
         })
 
     def test_svg_contains_task_labels_and_scenario_legend(self):
@@ -91,6 +92,16 @@ class TestRenderGanttSvgWithData(TransactionCase):
         svg = self.project._render_gantt_svg()
         self.assertIn('Plan', svg)
         self.assertIn('Noai', svg)
+
+    def test_progress_overlay_drawn_when_complete_is_set(self):
+        self._schedule(self.task_normal, self.plan, '2024-01-01', '2024-01-10', '1', complete=40.0)
+        svg = self.project._render_gantt_svg()
+        self.assertIn('fill="#212121" opacity="0.55"', svg)
+
+    def test_no_progress_overlay_when_complete_is_zero(self):
+        self._schedule(self.task_normal, self.plan, '2024-01-01', '2024-01-10', '1', complete=0.0)
+        svg = self.project._render_gantt_svg()
+        self.assertNotIn('fill="#212121" opacity="0.55"', svg)
 
     def test_today_marker_shown_when_now_falls_within_the_range(self):
         now = datetime.utcnow()

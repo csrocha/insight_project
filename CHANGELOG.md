@@ -9,6 +9,56 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.8] - 2026-07-10
+
+### Prompt
+
+> "Sigamos con el backlog de TJ3" (ítem "sin `complete`") → tras
+> descubrir que `complete` no afecta el scheduling, se preguntó si valía
+> la pena; el usuario eligió "Sumarlo a nuestro propio taskreport/Gantt"
+> → pregunta intermedia: "las tareas que terminaron [...] no se mueven
+> de fechas, ¿no?" — se confirmó que sí, pero por `booking`
+> (`_tjp_bookings`), no por `complete`.
+
+### Discusión de diseño
+
+- Se confirmó en la doc del gem `taskjuggler` (atributo `complete`,
+  `TjpSyntaxRules.rb`): *"The completion percentage has no impact on the
+  scheduler. It's meant for documentation purposes only."* Por eso no
+  alcanza con exportarlo y ya — hace falta re-importarlo y usarlo en
+  algo propio para que tenga valor real, que es lo que el usuario pidió.
+- El % de avance real ya existía en Odoo sin tocar nada: `project.task.progress`
+  (de `hr_timesheet`, dependencia ya declarada) calcula horas imputadas
+  sobre `allocated_hours`. Se exporta ese valor tal cual, en vez de dejar
+  que TJ3 use su propio cálculo naive basado en `now` (que puede
+  sobre/subestimar mucho si una tarea vencida no se cerró a tiempo).
+- Validado contra el binario real `tj3`: la columna del taskreport se
+  llama `"Completion"` (no `"complete"`) y el valor viene como string con
+  `%` (ej. `"62%"`), no un número plano — ninguna de las dos cosas era
+  obvia a partir de la sintaxis del atributo de entrada.
+- `complete` puede superar 100 en Odoo (`overtime`), pero TJ3 rechaza el
+  atributo fuera de `[0, 100]` — se clampea al exportar.
+- Aclaración de alcance: `complete` no reemplaza ni interactúa con
+  `booking` — una tarea con avance 100% ya queda "congelada" en el
+  pasado por tener bookings que cubren todo su esfuerzo (mecanismo
+  existente, sin relación con este cambio); `complete` es puramente la
+  barra visual en nuestro propio Gantt SVG.
+
+### Agregado
+
+- `_tjp_task_block` emite `complete <task.progress>` (clampeado a 100) en
+  toda tarea, no solo las hoja.
+- `_tjp_reports`: columna `complete` agregada al `taskreport` CSV.
+- `insight.task.schedule.complete` (Float, nuevo) + parser
+  `_parse_tj_complete` (columna `Completion`, formato `"NN%"`).
+- `_render_gantt_svg`: franja de avance sobre el borde inferior de cada
+  barra cuando `complete > 0`.
+- Tests: emisión con progreso real / clamp por overtime / cero sin
+  horas; parseo de `Completion`; columna ausente default a 0; overlay
+  presente/ausente en el SVG.
+
+---
+
 ## [17.0.9.6.7] - 2026-07-10
 
 ### Prompt

@@ -557,6 +557,14 @@ class ProjectProject(models.Model):
         lines = [f'{ind}task {t_id} "{t_name}" {{']
         if task.priority == '1':
             lines.append(f'{ind}  priority {self._TJP_HIGH_PRIORITY}')
+        # complete no afecta el scheduling (TJ3 lo documenta como solo para
+        # reporting) — se emite siempre, aunque sea 0, para pisar el cálculo
+        # naive de TJ3 basado en `now` con el avance real (horas imputadas
+        # vs. allocated_hours, ver project.task.progress de hr_timesheet).
+        # Se clampea a 100 porque TJ3 rechaza valores > 100 (progress puede
+        # superarlo con overtime).
+        complete = min(max(task.progress, 0.0), 100.0)
+        lines.append(f'{ind}  complete {complete:.2f}')
         if depth == 0:
             # chargeset se hereda a las subtareas; alcanza con declararlo una
             # sola vez en la tarea raíz para que 'cost' se acumule correctamente.
@@ -734,7 +742,7 @@ class ProjectProject(models.Model):
             return [
                 'taskreport "schedule_plan" {',
                 '  formats csv',
-                '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness',
+                '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness, complete',
                 '  scenarios plan',
                 '}',
                 '',
@@ -745,7 +753,7 @@ class ProjectProject(models.Model):
             lines += [
                 f'taskreport "schedule_{sc_id}" {{',
                 '  formats csv',
-                '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness',
+                '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness, complete',
                 f'  scenarios {sc_id}',
                 '}',
                 '',
@@ -1020,6 +1028,7 @@ class ProjectProject(models.Model):
                     'duration_days': self._parse_tj_duration(norm.get('duration', '')),
                     'cost': self._parse_tj_cost(norm.get('cost', '')),
                     'is_critical_path': self._parse_tj_criticalness(norm.get('criticalness', '')),
+                    'complete': self._parse_tj_complete(norm.get('completion', '')),
                     'bsi': norm.get('bsi', ''),
                     'resource_ids': [(6, 0, self._parse_tj_resource_ids(norm.get('resources', '')))],
                 })
@@ -1108,6 +1117,17 @@ class ProjectProject(models.Model):
             return float(value or '0') > 0.0
         except (ValueError, TypeError):
             return False
+
+    @staticmethod
+    def _parse_tj_complete(value):
+        """Convert the taskreport 'Completion' column (e.g. '62%') to a
+        plain float 0-100."""
+        if not value:
+            return 0.0
+        try:
+            return float(value.strip().rstrip('%'))
+        except (ValueError, AttributeError):
+            return 0.0
 
     @staticmethod
     def _parse_tj_resource_ids(value):
@@ -1280,6 +1300,15 @@ class ProjectProject(models.Model):
                     f'<rect x="{x1:.1f}" y="{yc+5}" width="{bw:.1f}" height="{RH-10}"'
                     f' fill="{fill}" rx="3" opacity="0.88"{stroke}/>'
                 )
+                if sched.complete > 0:
+                    # Franja de avance real (project.task.progress al momento
+                    # del export, ver _tjp_task_block) sobre el borde inferior
+                    # de la barra — no lo calcula TJ3, es solo visual.
+                    complete_w = bw * min(sched.complete, 100.0) / 100.0
+                    o.append(
+                        f'<rect x="{x1:.1f}" y="{yc+RH-8}" width="{complete_w:.1f}" height="3"'
+                        f' fill="#212121" opacity="0.55" rx="1.5"/>'
+                    )
                 if sched.is_critical_path:
                     o.append(
                         f'<text x="{x1+bw+2:.1f}" y="{yc+15}" font-size="10">⚡</text>'
