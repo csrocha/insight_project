@@ -9,6 +9,64 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.9] - 2026-07-11
+
+### Prompt
+
+> "Sabes porque realmente no avanzo en el punto Finish-Finish? Porque el
+> tipo de dependencia lo tiene la tarea y no la tiene la relación entre
+> tarea y tarea?" → confirmado como el bloqueante real de FF; se acordó
+> resolverlo como su propio ítem de backlog, antes de FF, en vez de
+> mezclarlo con el truco de `alap`.
+
+### Discusión de diseño
+
+- `tj_dependency_type` vivía en `project.task` (la tarea dependiente),
+  aplicado por igual a **todos** sus bloqueantes (`depend_on_ids`, un
+  Many2many nativo de Odoo sin atributos propios por arista). Una tarea
+  real casi nunca depende de una sola cosa, así que este diseño no podía
+  ni describir "FF con este bloqueante, FS con aquel otro" — el problema
+  era anterior a cualquier dificultad de `alap`/hito sintético.
+- Se evaluó reemplazar `depend_on_ids` por un modelo propio, pero se
+  descartó: ese campo nativo alimenta el Gantt/kanban/bloqueo de Odoo
+  (flechas de dependencia, estado bloqueado, etc.) — tocarlo hubiera
+  significado reimplementar UI que ya funciona bien. En cambio,
+  `insight.task.dependency` es un **overlay opcional**: solo declara un
+  tipo para las aristas que necesitan algo distinto del default de la
+  tarea; sin overrides, el comportamiento es idéntico a antes (mismo
+  patrón que `extra_skill_group_ids` en `project_improve`: la mecánica
+  simple sigue siendo el camino por default, el overlay es la excepción).
+- Se prefirió no sincronizar automáticamente el overlay con
+  `depend_on_ids` (crear/borrar filas cuando cambia la dependencia
+  nativa): en vez de eso, un `@api.constrains` valida que
+  `depends_on_id` ya sea un bloqueante real de la tarea al guardar. Si
+  luego se quita esa dependencia de `depend_on_ids`, el override queda
+  huérfano pero inofensivo (el loop de export solo itera
+  `depend_on_ids`, nunca al revés) — más simple que mantener sincronía
+  bidireccional para un caso de uso que va a ser minoritario.
+- El domain `[('id', 'in', parent.depend_on_ids)]` en la vista (para
+  limitar qué bloqueante se puede elegir) rompió la carga de la vista:
+  Odoo restringe `depend_on_ids` al grupo
+  `project.group_project_task_dependencies` y no permite referenciarlo
+  en el domain de un campo visible para cualquier usuario. Se sacó el
+  domain — la validación queda solo del lado del constraint Python.
+
+### Agregado
+
+- Modelo `insight.task.dependency` (`task_id`, `depends_on_id`,
+  `dependency_type`), con constraint de unicidad por arista y validación
+  de que `depends_on_id` sea un bloqueante real.
+- `project.task.dependency_type_ids` (One2many) + método
+  `_tj_dependency_type_for(dep)` que resuelve el tipo efectivo (override
+  si existe, si no `tj_dependency_type`).
+- `_tjp_task_block` (`project_project.py`): el chequeo/emisión de FF/SS
+  ahora es por arista, no por tarea.
+- Vista: lista embebida en la pestaña "Schedule" de la tarea.
+- Tests: override afecta solo su arista, FF en una arista con default FS
+  en la tarea sigue fallando, constraint de bloqueante inexistente.
+
+---
+
 ## [17.0.9.6.8] - 2026-07-10
 
 ### Prompt

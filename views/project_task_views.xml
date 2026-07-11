@@ -25,6 +25,14 @@
                             <field name="is_critical_path" readonly="1"/>
                         </group>
                     </group>
+                    <group string="Tipo de dependencia por bloqueante (override puntual)">
+                        <field name="dependency_type_ids" nolabel="1">
+                            <tree editable="bottom">
+                                <field name="depends_on_id"/>
+                                <field name="dependency_type"/>
+                            </tree>
+                        </field>
+                    </group>
                 </page>
             </xpath>
         </field>

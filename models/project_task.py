@@ -16,6 +16,19 @@ class ProjectTask(models.Model):
         [('FS', 'Finish→Start'), ('SS', 'Start→Start'), ('FF', 'Finish→Finish')],
         string='Tipo de dependencia TJ',
         default='FS',
+        help='Default aplicado a todos los bloqueantes de depend_on_ids que '
+             'no tengan su propio override en dependency_type_ids — la '
+             'mayoría de las tareas tiene un solo tipo de dependencia, así '
+             'que alcanza con este campo. Para mezclar tipos distintos '
+             'entre bloqueantes de la misma tarea, agregar un override '
+             'puntual en "Tipo de dependencia por bloqueante".',
+    )
+    dependency_type_ids = fields.One2many(
+        'insight.task.dependency', 'task_id',
+        string='Tipo de dependencia por bloqueante',
+        help='Override de tj_dependency_type para bloqueantes puntuales — '
+             'sin ningún override acá, todos los bloqueantes de '
+             'depend_on_ids usan tj_dependency_type por igual.',
     )
     tj_persistent_allocation = fields.Boolean(
         string='Persistir recurso asignado (TJ)',
@@ -36,6 +49,14 @@ class ProjectTask(models.Model):
     bsi = fields.Char(
         string='BSI', compute='_compute_scheduled', store=True,
     )
+
+    def _tj_dependency_type_for(self, dep):
+        """Tipo de dependencia TJ3 efectivo hacia el bloqueante `dep`: el
+        override puntual en dependency_type_ids si existe para esa arista,
+        si no tj_dependency_type (el default de la tarea)."""
+        self.ensure_one()
+        override = self.dependency_type_ids.filtered(lambda d: d.depends_on_id == dep)
+        return override.dependency_type if override else self.tj_dependency_type
 
     @api.depends('project_id.scenario_ids', 'project_id.scenario_ids.schedule_ids')
     def _compute_scheduled(self):

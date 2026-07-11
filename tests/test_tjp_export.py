@@ -12,7 +12,7 @@ from datetime import date
 from unittest.mock import patch
 
 from odoo import fields
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import TransactionCase
 
 
@@ -486,8 +486,9 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn(f'  depends !t{blocker.id} {{ onstart }}', lines)
 
     def test_dependency_multiple_blockers_share_task_type(self):
-        """tj_dependency_type vive en la tarea, no por arista: se aplica
-        igual a todos sus bloqueantes."""
+        """tj_dependency_type es el default de la tarea: sin overrides por
+        arista (dependency_type_ids), se aplica igual a todos sus
+        bloqueantes."""
         blocker1 = self._task(name='Bloqueante 1')
         blocker2 = self._task(name='Bloqueante 2')
         dependent = self._task(
@@ -509,6 +510,46 @@ class TestTjpTaskBlock(TransactionCase):
         )
         with self.assertRaises(UserError):
             self.project._tjp_task_block(dependent)
+
+    def test_dependency_type_override_applies_only_to_its_own_edge(self):
+        """Un override en dependency_type_ids cambia el tipo de UNA arista
+        puntual sin afectar a los demás bloqueantes, que siguen usando el
+        default de la tarea (tj_dependency_type)."""
+        blocker1 = self._task(name='Bloqueante 1')
+        blocker2 = self._task(name='Bloqueante 2')
+        dependent = self._task(
+            name='Dependiente', tj_dependency_type='FS',
+            depend_on_ids=[(6, 0, [blocker1.id, blocker2.id])],
+        )
+        self.env['insight.task.dependency'].create({
+            'task_id': dependent.id, 'depends_on_id': blocker1.id, 'dependency_type': 'SS',
+        })
+        lines = self.project._tjp_task_block(dependent)
+        self.assertIn(f'  depends !t{blocker1.id} {{ onstart }}', lines)
+        self.assertIn(f'  depends !t{blocker2.id}', lines)
+        self.assertNotIn(f'  depends !t{blocker2.id} {{ onstart }}', lines)
+
+    def test_dependency_type_override_ff_raises_even_with_fs_task_default(self):
+        blocker1 = self._task(name='Bloqueante FF')
+        blocker2 = self._task(name='Bloqueante FS')
+        dependent = self._task(
+            name='Dependiente mixto', tj_dependency_type='FS',
+            depend_on_ids=[(6, 0, [blocker1.id, blocker2.id])],
+        )
+        self.env['insight.task.dependency'].create({
+            'task_id': dependent.id, 'depends_on_id': blocker1.id, 'dependency_type': 'FF',
+        })
+        with self.assertRaises(UserError):
+            self.project._tjp_task_block(dependent)
+
+    def test_dependency_type_override_requires_a_real_dependency(self):
+        blocker = self._task(name='Bloqueante')
+        not_a_blocker = self._task(name='No es bloqueante')
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        with self.assertRaises(ValidationError):
+            self.env['insight.task.dependency'].create({
+                'task_id': dependent.id, 'depends_on_id': not_a_blocker.id, 'dependency_type': 'SS',
+            })
 
     def test_high_priority_emits_priority_line(self):
         task = self._task(name='Urgente', priority='1')

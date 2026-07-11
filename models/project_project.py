@@ -594,22 +594,27 @@ class ProjectProject(models.Model):
                     lines.append(f'{ind}  duration {duration_d:.2f}d')
 
         # Dependencies: FS (default) and SS map to real TJ3 depends modifiers.
-        # FF has no native TJ3 constraint (depends only anchors this task's
-        # start, never its end) — fail loud instead of silently emitting FS.
-        if task.tj_dependency_type == 'FF' and any(
-            dep.project_id == self for dep in task.depend_on_ids
-        ):
-            raise UserError(_(
-                'La tarea "%s" tiene una dependencia Finish→Finish, que '
-                'todavía no está soportada por el export TJP (TaskJuggler no '
-                'tiene una forma nativa de anclar el fin de una tarea). '
-                'Cambie el tipo de dependencia a Finish→Start o Start→Start.'
-            ) % task.name)
+        # El tipo es por arista (dependency_type_ids, ver project_task.py),
+        # con tj_dependency_type de la tarea como default cuando una arista
+        # no tiene override propio — así una misma tarea puede mezclar FS
+        # con un bloqueante y SS con otro. FF no tiene constraint nativo en
+        # TJ3 (depends solo ancla el inicio de esta tarea, nunca su fin) —
+        # falla loud en esa arista puntual en vez de silenciarla como FS.
         for dep in task.depend_on_ids:
-            if dep.project_id == self:
-                dep_path = self._tjp_task_abs_path(dep)
-                suffix = ' { onstart }' if task.tj_dependency_type == 'SS' else ''
-                lines.append(f'{ind}  depends {dep_path}{suffix}')
+            if dep.project_id != self:
+                continue
+            dep_type = task._tj_dependency_type_for(dep)
+            if dep_type == 'FF':
+                raise UserError(_(
+                    'La dependencia de "%(task)s" hacia "%(dep)s" es '
+                    'Finish→Finish, que todavía no está soportada por el '
+                    'export TJP (TaskJuggler no tiene una forma nativa de '
+                    'anclar el fin de una tarea). Cambie esa arista a '
+                    'Finish→Start o Start→Start.'
+                ) % {'task': task.name, 'dep': dep.name})
+            dep_path = self._tjp_task_abs_path(dep)
+            suffix = ' { onstart }' if dep_type == 'SS' else ''
+            lines.append(f'{ind}  depends {dep_path}{suffix}')
 
         # Subtasks (recursive)
         for child in child_tasks:

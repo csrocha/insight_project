@@ -12,3 +12,4 @@ access_insight_import_wizard_user,insight.import.wizard user,model_insight_impor
 access_insight_import_resource_map_manager,insight.import.resource.map manager,model_insight_import_resource_map,project.group_project_manager,1,1,1,1
 access_insight_import_resource_map_user,insight.import.resource.map user,model_insight_import_resource_map,base.group_user,1,1,1,1
 access_insight_unscheduled_tasks_wizard_user,insight.unscheduled.tasks.wizard user,model_insight_unscheduled_tasks_wizard,base.group_user,1,1,1,1
+access_insight_task_dependency_user,insight.task.dependency user,model_insight_task_dependency,base.group_user,1,1,1,1
