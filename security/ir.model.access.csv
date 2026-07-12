@@ -13,3 +13,4 @@ access_insight_import_resource_map_manager,insight.import.resource.map manager,m
 access_insight_import_resource_map_user,insight.import.resource.map user,model_insight_import_resource_map,base.group_user,1,1,1,1
 access_insight_unscheduled_tasks_wizard_user,insight.unscheduled.tasks.wizard user,model_insight_unscheduled_tasks_wizard,base.group_user,1,1,1,1
 access_insight_task_dependency_user,insight.task.dependency user,model_insight_task_dependency,base.group_user,1,1,1,1
+access_insight_employee_shift_user,insight.employee.shift user,model_insight_employee_shift,base.group_user,1,1,1,1

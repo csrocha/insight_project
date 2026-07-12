@@ -34,3 +34,11 @@ class HrEmployee(models.Model):
         help='Tope de horas por semana que TJ3 puede asignarle a este empleado '
              '("weeklymax" del bloque "limits" de TJ3). 0 = sin tope.',
     )
+    tj_shift_ids = fields.One2many(
+        'insight.employee.shift', 'employee_id',
+        string='Cambios temporales de disponibilidad (TJ)',
+        help='Ventanas puntuales (ej. sprint con horas extra, dedicación '
+             'reducida temporal) donde este empleado usa un calendario '
+             'distinto del habitual — sin tocar resource_calendar_id, solo '
+             'para el .tjp exportado (equivalente al bloque "shift" de TJ3).',
+    )

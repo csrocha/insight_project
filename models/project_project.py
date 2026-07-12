@@ -305,6 +305,7 @@ class ProjectProject(models.Model):
         lines = []
         lines += self._tjp_project_header(scenarios, now_date)
         lines += self._tjp_cost_account()
+        lines += self._tjp_shift_declarations(now_date)
         for user in self._tj_project_users():
             lines += self._tjp_resource_block(user)
         for scenario in scenarios:
@@ -380,6 +381,35 @@ class ProjectProject(models.Model):
         los reportes tenga algo contra qué acumular (ver _tjp_task_block, que
         le asigna 'chargeset' a cada tarea raíz)."""
         return [f'account {self._TJP_COST_ACCOUNT_ID} "Costo"', '']
+
+    def _tjp_shift_declarations(self, now_date=None, users=None):
+        """Bloques `shift` reusables (uno por cada resource.calendar
+        distinto usado en algún cambio temporal de disponibilidad,
+        hr.employee.tj_shift_ids, de los empleados de este proyecto),
+        declarados una sola vez antes de los `resource` que los referencian
+        — TJ3 exige que existan antes de usarse. Cada `resource` referencia
+        el shift por id y agrega su propia ventana de fechas (ver
+        _tjp_shift_assignments)."""
+        if now_date is None:
+            now_date = self._tjp_now_date()
+        if users is None:
+            users = self._tj_project_users()
+        calendars = self.env['resource.calendar']
+        for user in users:
+            employee = self.env['hr.employee'].sudo().search(
+                [('user_id', '=', user.id)], limit=1
+            )
+            if employee:
+                calendars |= employee.tj_shift_ids.mapped('calendar_id')
+        lines = []
+        for calendar in calendars:
+            shift_id = self._tjp_shift_id(calendar)
+            shift_name = (calendar.name or 'Shift').replace('"', "'")
+            lines.append(f'shift {shift_id} "{shift_name}" {{')
+            for l in self._tjp_calendar_hours(calendar, False, now_date):
+                lines.append(f'  {l}')
+            lines += ['}', '']
+        return lines
 
     def _tjp_project_end_date(self, start):
         if self.date and self.date > start:
@@ -478,6 +508,8 @@ class ProjectProject(models.Model):
             lines += self._tjp_calendar_hours(calendar, employee.resource_id, ref_date)
             lines += self._tjp_global_leaves(calendar, ref_date)
 
+        lines += self._tjp_shift_assignments(employee, ref_date)
+
         leaves = self.env['hr.leave'].search([
             ('employee_id', '=', employee.id),
             ('state', '=', 'validate'),
@@ -491,6 +523,21 @@ class ProjectProject(models.Model):
             # de la sintaxis — 'annual' es el equivalente correcto.
             lines.append(f'  leaves annual {d_from} - {d_to}')
 
+        return lines
+
+    def _tjp_shift_assignments(self, employee, ref_date):
+        """Ventanas de `shifts {shift_id} {desde} - {hasta}` para los
+        cambios temporales de disponibilidad del empleado
+        (hr.employee.tj_shift_ids) — el bloque `shift` en sí ya se declaró
+        una vez para todo el proyecto (ver _tjp_shift_declarations). Se
+        excluyen ventanas ya vencidas (mismo criterio que _tjp_global_leaves
+        y los hr.leave individuales)."""
+        lines = []
+        for shift in employee.tj_shift_ids.sorted('date_from'):
+            if shift.date_to < ref_date:
+                continue
+            shift_id = self._tjp_shift_id(shift.calendar_id)
+            lines.append(f'  shifts {shift_id} {shift.date_from} - {shift.date_to}')
         return lines
 
     def _tjp_global_leaves(self, calendar, ref_date):
@@ -825,6 +872,10 @@ class ProjectProject(models.Model):
         if raw[0].isdigit():
             raw = 'sc_' + raw
         return raw.lower()[:24]
+
+    @staticmethod
+    def _tjp_shift_id(calendar):
+        return f'shift_cal{calendar.id}'
 
     @staticmethod
     def _float_to_hhmm(hours):

@@ -163,6 +163,57 @@ class TestTjpResourceBlock(TransactionCase):
         self.assertIn('  workinghours sun off', text)
         self.assertIn('  leaves annual 2026-07-20 - 2026-07-22', text)
 
+    def test_shift_assignment_emitted_for_active_window(self):
+        crunch_calendar = self.env['resource.calendar'].create({
+            'name': 'Crunch',
+            'attendance_ids': [(5, 0, 0)] + [
+                (0, 0, {'name': 'Crunch', 'dayofweek': dow, 'hour_from': 8.0, 'hour_to': 20.0})
+                for dow in ('0', '1', '2', '3', '4')
+            ],
+        })
+        shift = self.env['insight.employee.shift'].create({
+            'employee_id': self.employee_with_calendar.id,
+            'date_from': '2026-07-20', 'date_to': '2026-08-02',
+            'calendar_id': crunch_calendar.id,
+        })
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertIn(f'  shifts {self.project._tjp_shift_id(crunch_calendar)} 2026-07-20 - 2026-08-02', text)
+        shift.unlink()
+
+    def test_shift_assignment_excludes_expired_window(self):
+        crunch_calendar = self.env['resource.calendar'].create({'name': 'Crunch pasado'})
+        shift = self.env['insight.employee.shift'].create({
+            'employee_id': self.employee_with_calendar.id,
+            'date_from': '2026-01-01', 'date_to': '2026-01-15',
+            'calendar_id': crunch_calendar.id,
+        })
+        text = '\n'.join(self.project._tjp_resource_block(self.user_with_calendar))
+        self.assertNotIn('shifts', text)
+        shift.unlink()
+
+    def test_shift_declarations_include_workinghours_of_referenced_calendar(self):
+        crunch_calendar = self.env['resource.calendar'].create({
+            'name': 'Crunch',
+            'attendance_ids': [(5, 0, 0), (0, 0, {
+                'name': 'Crunch', 'dayofweek': '0', 'hour_from': 8.0, 'hour_to': 20.0,
+            })],
+        })
+        shift = self.env['insight.employee.shift'].create({
+            'employee_id': self.employee_with_calendar.id,
+            'date_from': '2026-07-20', 'date_to': '2026-08-02',
+            'calendar_id': crunch_calendar.id,
+        })
+        text = '\n'.join(self.project._tjp_shift_declarations(users=self.user_with_calendar))
+        shift_id = self.project._tjp_shift_id(crunch_calendar)
+        self.assertIn(f'shift {shift_id} "Crunch" {{', text)
+        self.assertIn('  workinghours mon 8:00 - 20:00', text)
+        shift.unlink()
+
+    def test_shift_declarations_empty_without_any_shift(self):
+        self.assertEqual(
+            self.project._tjp_shift_declarations(users=self.user_with_calendar), [],
+        )
+
     def test_global_calendar_leave_emitted_as_holiday(self):
         """resource.calendar.leaves sin resource_id es un feriado de empresa
         (aplica a cualquiera que use ese calendario) — se exporta como
@@ -292,6 +343,55 @@ class TestTjpResourceBlock(TransactionCase):
         text = '\n'.join(self.project._tjp_resource_block(rotating_user))
         self.assertIn('  workinghours mon 8:00 - 12:00', text)
         self.assertIn('  workinghours tue off', text)
+
+
+class TestInsightEmployeeShift(TransactionCase):
+    """Validaciones del modelo insight.employee.shift — el export en sí ya
+    se prueba en TestTjpResourceBlock."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        user = cls.env['res.users'].with_context(no_reset_password=True).create({
+            'name': 'Shift Test', 'login': 'shift_test@insight.test', 'email': 'shift_test@insight.test',
+            'groups_id': [(4, cls.env.ref('base.group_user').id)],
+        })
+        cls.employee = cls.env['hr.employee'].create({'name': 'Shift Test', 'user_id': user.id})
+        cls.calendar = cls.env['resource.calendar'].create({'name': 'Alt Calendar'})
+
+    def test_date_from_after_date_to_raises(self):
+        with self.assertRaises(ValidationError):
+            self.env['insight.employee.shift'].create({
+                'employee_id': self.employee.id,
+                'date_from': '2026-08-01', 'date_to': '2026-07-01',
+                'calendar_id': self.calendar.id,
+            })
+
+    def test_overlapping_windows_for_same_employee_raises(self):
+        self.env['insight.employee.shift'].create({
+            'employee_id': self.employee.id,
+            'date_from': '2026-07-01', 'date_to': '2026-07-15',
+            'calendar_id': self.calendar.id,
+        })
+        with self.assertRaises(ValidationError):
+            self.env['insight.employee.shift'].create({
+                'employee_id': self.employee.id,
+                'date_from': '2026-07-10', 'date_to': '2026-07-20',
+                'calendar_id': self.calendar.id,
+            })
+
+    def test_adjacent_non_overlapping_windows_are_allowed(self):
+        self.env['insight.employee.shift'].create({
+            'employee_id': self.employee.id,
+            'date_from': '2026-07-01', 'date_to': '2026-07-15',
+            'calendar_id': self.calendar.id,
+        })
+        second = self.env['insight.employee.shift'].create({
+            'employee_id': self.employee.id,
+            'date_from': '2026-07-16', 'date_to': '2026-07-31',
+            'calendar_id': self.calendar.id,
+        })
+        self.assertTrue(second)
 
 
 class TestTjpTaskBlock(TransactionCase):

@@ -9,6 +9,64 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.11] - 2026-07-12
+
+### Prompt
+
+> "Pasemos al shift. Pero describime el caso de uso." → confirmado el
+> caso de uso (cambios temporales de disponibilidad de un recurso — ej.
+> sprint con horas extra, o dedicación reducida puntual — sin tocar su
+> calendario permanente en Odoo) → "No, me parece perfecto. Sigamos con eso."
+
+### Discusión de diseño
+
+- Confirmado en el gem (`shifts.resource`, `TjpSyntaxRules.rb`): un
+  `shift` es una "mini-calendario" reusable, declarado una sola vez a
+  nivel proyecto, que se le asigna a un recurso acotado a una ventana de
+  fechas — durante esa ventana **reemplaza por completo** el calendario
+  habitual del recurso. Distinto de `leaves` (que son ausencias, 0
+  horas): un shift puede tener MÁS o MENOS horas que lo habitual.
+- Se reusó el modelo `resource.calendar` de Odoo en vez de inventar un
+  esquema propio de horarios: el "calendario alternativo" de un shift es
+  cualquier `resource.calendar` existente, y `_tjp_calendar_hours`
+  (ya usado para el calendario habitual del empleado) se reutiliza tal
+  cual para volcar las horas del shift — cero código nuevo de parsing de
+  horarios.
+- Validado contra el binario real: una tarea de 20 días de esfuerzo
+  termina antes (2026-07-27) con una ventana de horas extra (8-20h en
+  vez de 9-18h) que sin ella (2026-07-29) — confirma que el shift
+  realmente cambia el cálculo, no es solo cosmético.
+- `insight.employee.shift` vive a nivel de `hr.employee` (no por
+  proyecto), consistente con `tj_base_efficiency`/`tj_daily_rate`/
+  `tj_daily_max_hours` — mismo precedente. Si en el futuro hace falta
+  variar por proyecto, sería una extensión, no un rediseño.
+- Los bloques `shift` deben declararse ANTES que los `resource` que los
+  referencian (igual que `account`) — un solo bloque por
+  `resource.calendar` distinto, reusado por id desde cualquier empleado
+  que lo use en su ventana.
+- Constraint de no-superposición (`insight.employee.shift`): TJ3 no
+  acepta ventanas de shift solapadas para el mismo recurso — se valida
+  en Odoo con un mensaje claro en vez de dejar que el microservicio lo
+  rechace.
+
+### Agregado
+
+- Modelo `insight.employee.shift` (`employee_id`, `date_from`,
+  `date_to`, `calendar_id`), con constraints de rango de fechas válido y
+  no-superposición.
+- `hr.employee.tj_shift_ids` (One2many), visible en una pestaña nueva
+  "Disponibilidad TJ" del form de empleado.
+- `_tjp_shift_declarations`/`_tjp_shift_id`/`_tjp_shift_assignments`
+  (`project_project.py`).
+- Tests: emisión de la ventana activa, exclusión de ventanas vencidas,
+  contenido del bloque `shift` declarado, ausencia sin ningún shift,
+  constraints del modelo (rango inválido, solapamiento, ventanas
+  adyacentes permitidas).
+- Validado end-to-end: proyecto real → `_generate_tjp()` → binario real
+  → mismo resultado que la exploración aislada.
+
+---
+
 ## [17.0.9.6.10] - 2026-07-11
 
 ### Prompt
