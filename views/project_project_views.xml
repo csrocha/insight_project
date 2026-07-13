@@ -73,8 +73,9 @@
                             <field name="currency_id" groups="base.group_multi_currency"/>
                         </tree>
                     </field>
-                    <separator string="Reportes" invisible="not is_tj_enabled"/>
-                    <field name="report_asset_ids" nolabel="1" invisible="not is_tj_enabled">
+                </page>
+                <page string="Reportes" name="insight_reports" invisible="not is_tj_enabled">
+                    <field name="report_asset_ids" nolabel="1">
                         <tree create="0" delete="0" open="1">
                             <field name="name"/>
                             <field name="tags"/>

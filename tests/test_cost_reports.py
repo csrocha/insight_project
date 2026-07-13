@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the cost breakdown reports (fase/skill/departamento,
-ver models/project_project.py). Fase y skill se calculan con cuentas TJ3
-reales (nunca contra el servicio real — _call_tj_microservice siempre
-mockeado acá); departamento se calcula 100% en Python sobre
-insight.task.schedule ya importado, sin llamar a TJ3 en absoluto.
+ver models/project_project.py). Las 3 dimensiones se calculan 100% en Python
+sobre insight.task.schedule ya importado — _call_tj_microservice solo se
+mockea para poblar ese schedule (vía action_run_schedule), nunca para pedir
+un desglose de costo aparte.
 """
 from unittest.mock import patch
 
@@ -13,58 +13,19 @@ from odoo.tests.common import TransactionCase
 from ..models.project_project import ProjectProject
 
 
-class TestTjpPhaseSkillAccountLines(TransactionCase):
+class TestCostByPhaseAndSkill(TransactionCase):
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.project = cls.env['project.project'].create({
-            'name': 'Cost Report Accounts Project', 'is_tj_enabled': True,
+            'name': 'Phase Skill Cost Project', 'is_tj_enabled': True,
+        })
+        cls.scenario = cls.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
         })
         skill_type = cls.env['hr.skill.type'].create({
-            'name': 'Cost Report Skill Type',
-            'skill_level_ids': [(0, 0, {
-                'name': 'Expert', 'level_progress': 100, 'default_level': True,
-            })],
-        })
-        cls.skill_python = cls.env['hr.skill'].create({
-            'name': 'Python', 'skill_type_id': skill_type.id,
-        })
-        cls.root = cls.env['project.task'].create({
-            'name': 'Fase 1', 'project_id': cls.project.id,
-        })
-
-    def test_phase_account_declared_with_leaf_per_root_task(self):
-        lines = self.project._tjp_phase_skill_account_lines(self.root, self.env['hr.skill'])
-        text = '\n'.join(lines)
-        self.assertIn('account by_phase "Por fase" {', text)
-        self.assertIn(f'  account phase_{self.root.id} "Fase 1"', text)
-        self.assertNotIn('by_skill', text)
-
-    def test_skill_account_declared_with_leaf_per_skill(self):
-        lines = self.project._tjp_phase_skill_account_lines(self.env['project.task'], self.skill_python)
-        text = '\n'.join(lines)
-        self.assertIn('account by_skill "Por categoría" {', text)
-        self.assertIn(f'  account skill_{self.skill_python.id} "Python"', text)
-        self.assertNotIn('by_phase', text)
-
-    def test_no_accounts_declared_when_both_empty(self):
-        lines = self.project._tjp_phase_skill_account_lines(
-            self.env['project.task'], self.env['hr.skill'],
-        )
-        self.assertEqual(lines, [])
-
-
-class TestTjpExtraChargesetFn(TransactionCase):
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.project = cls.env['project.project'].create({
-            'name': 'Chargeset Fn Project', 'is_tj_enabled': True,
-        })
-        skill_type = cls.env['hr.skill.type'].create({
-            'name': 'Chargeset Skill Type',
+            'name': 'Phase Skill Cost Type',
             'skill_level_ids': [(0, 0, {
                 'name': 'Expert', 'level_progress': 100, 'default_level': True,
             })],
@@ -73,7 +34,7 @@ class TestTjpExtraChargesetFn(TransactionCase):
             {'name': 'Skill A', 'skill_type_id': skill_type.id},
             {'name': 'Skill B', 'skill_type_id': skill_type.id},
         ])
-        cls.root = cls.env['project.task'].create({'name': 'Root', 'project_id': cls.project.id})
+        cls.root = cls.env['project.task'].create({'name': 'Fase 1', 'project_id': cls.project.id})
         cls.leaf_one_skill = cls.env['project.task'].create({
             'name': 'Leaf one skill', 'project_id': cls.project.id, 'parent_id': cls.root.id,
             'required_skill_ids': [(6, 0, [cls.skill_a.id])],
@@ -86,52 +47,47 @@ class TestTjpExtraChargesetFn(TransactionCase):
             'name': 'Leaf no skill', 'project_id': cls.project.id, 'parent_id': cls.root.id,
         })
 
-    def test_root_task_gets_phase_chargeset(self):
-        leaf_ids = self.project._tjp_leaf_task_ids()
-        fn = self.project._tjp_extra_chargeset_fn(leaf_ids)
-        self.assertEqual(fn(self.root, 0), [f'chargeset phase_{self.root.id}'])
+    def _schedule(self, task, cost):
+        return self.env['insight.task.schedule'].create({
+            'task_id': task.id, 'scenario_id': self.scenario.id, 'cost': cost,
+        })
 
-    def test_leaf_with_one_skill_gets_single_chargeset(self):
-        leaf_ids = self.project._tjp_leaf_task_ids()
-        fn = self.project._tjp_extra_chargeset_fn(leaf_ids)
-        self.assertEqual(fn(self.leaf_one_skill, 1), [f'chargeset skill_{self.skill_a.id}'])
+    def test_phase_cost_is_root_task_own_cost(self):
+        """TJ3 ya acumula el costo de las subtareas en la raíz (mismo dato
+        que insight.scenario.total_cost) — no hace falta ninguna cuenta
+        TJ3 aparte para "costo por fase"."""
+        self._schedule(self.root, 3200.0)
+        phase_costs, _ = self.project._tj_cost_by_phase_and_skill(self.scenario)
+        self.assertEqual(phase_costs.get(self.root), 3200.0)
 
-    def test_leaf_with_two_skills_gets_comma_joined_chargeset(self):
-        leaf_ids = self.project._tjp_leaf_task_ids()
-        fn = self.project._tjp_extra_chargeset_fn(leaf_ids)
-        lines = fn(self.leaf_two_skills, 1)
-        self.assertEqual(len(lines), 1)
-        self.assertIn(f'skill_{self.skill_a.id}', lines[0])
-        self.assertIn(f'skill_{self.skill_b.id}', lines[0])
-        self.assertTrue(lines[0].startswith('chargeset '))
+    def test_leaf_with_one_skill_gets_full_cost(self):
+        self._schedule(self.leaf_one_skill, 100.0)
+        _, skill_costs = self.project._tj_cost_by_phase_and_skill(self.scenario)
+        self.assertEqual(skill_costs.get(self.skill_a), 100.0)
 
-    def test_leaf_without_skills_gets_no_chargeset(self):
-        leaf_ids = self.project._tjp_leaf_task_ids()
-        fn = self.project._tjp_extra_chargeset_fn(leaf_ids)
-        self.assertEqual(fn(self.leaf_no_skill, 1), [])
+    def test_leaf_with_two_skills_splits_evenly(self):
+        self._schedule(self.leaf_two_skills, 200.0)
+        _, skill_costs = self.project._tj_cost_by_phase_and_skill(self.scenario)
+        self.assertEqual(skill_costs.get(self.skill_a), 100.0)
+        self.assertEqual(skill_costs.get(self.skill_b), 100.0)
 
+    def test_leaf_without_skills_contributes_nothing(self):
+        self._schedule(self.leaf_no_skill, 50.0)
+        _, skill_costs = self.project._tj_cost_by_phase_and_skill(self.scenario)
+        self.assertEqual(skill_costs, {})
 
-class TestParseAccountreportCsv(TransactionCase):
+    def test_skill_costs_accumulate_across_leaves(self):
+        self._schedule(self.leaf_one_skill, 100.0)
+        self._schedule(self.leaf_two_skills, 200.0)
+        _, skill_costs = self.project._tj_cost_by_phase_and_skill(self.scenario)
+        self.assertEqual(skill_costs.get(self.skill_a), 200.0)
+        self.assertEqual(skill_costs.get(self.skill_b), 100.0)
 
-    def test_takes_last_period_column_not_sum(self):
-        """Las columnas de período son ACUMULADAS a la fecha (confirmado
-        contra el binario real) — sumarlas duplicaría/triplicaría el
-        costo. El valor correcto es el de la última columna."""
-        csv_content = (
-            '"Id";"BSI";"Name";"2026-07-01";"2026-08-01";"2026-09-01"\n'
-            '"phase_1";"1.1";"Fase 1";0.0;300.0;300.0\n'
-            '"phase_2";"1.2";"Fase 2";0.0;500.0;500.0\n'
-        )
-        result = ProjectProject._parse_accountreport_csv(csv_content)
-        self.assertEqual(result['phase_1'], 300.0)
-        self.assertEqual(result['phase_2'], 500.0)
-
-    def test_empty_csv_returns_empty_dict(self):
-        self.assertEqual(ProjectProject._parse_accountreport_csv(''), {})
-
-    def test_row_without_period_columns_is_skipped(self):
-        csv_content = '"Id";"Name"\n"phase_1";"Fase 1"\n'
-        self.assertEqual(ProjectProject._parse_accountreport_csv(csv_content), {})
+    def test_blocked_when_schedule_dirty(self):
+        self.project.schedule_dirty = True
+        with self.assertRaises(UserError):
+            self.project._tj_cost_by_phase_and_skill(self.scenario)
+        self.project.schedule_dirty = False
 
 
 class TestCostByDepartment(TransactionCase):
@@ -219,16 +175,18 @@ class TestComputeAndSaveCostReports(TransactionCase):
             'insight_project.tj_microservice_url', 'http://tj3.local',
         )
 
-    def _mock_csv_files(self):
-        phase_csv = (
-            '"Id";"BSI";"Name";"2026-07-01";"2026-08-01"\n'
-            f'"phase_{self.root.id}";"1";"Fase 1";0.0;3200.0\n'
-        )
-        return {f'{self.project._TJP_PHASE_REPORT_ID}.csv': phase_csv}
+    def _seed_schedule(self):
+        """Simula el insight.task.schedule que deja una corrida real de
+        'Ejecutar Schedule' (ver _import_scenario_csv) — de ahí en más,
+        _compute_and_save_cost_reports calcula fase/skill/departamento
+        100% en Python, sin llamar a TJ3."""
+        self.env['insight.task.schedule'].create({
+            'task_id': self.root.id, 'scenario_id': self.scenario.id, 'cost': 3200.0,
+        })
 
     def test_generates_three_snapshots_with_correct_metadata(self):
-        with patch.object(ProjectProject, '_call_tj_microservice', return_value={'csv_files': self._mock_csv_files()}):
-            self.project._compute_and_save_cost_reports(self.scenario)
+        self._seed_schedule()
+        self.project._compute_and_save_cost_reports(self.scenario)
 
         assets = self.env['knowledge.asset'].search([
             ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.scenario.id),
@@ -244,9 +202,9 @@ class TestComputeAndSaveCostReports(TransactionCase):
             self.assertTrue(version.schema.startswith('insight_project.cost_by_'))
 
     def test_second_call_creates_new_version_not_new_asset(self):
-        with patch.object(ProjectProject, '_call_tj_microservice', return_value={'csv_files': self._mock_csv_files()}):
-            self.project._compute_and_save_cost_reports(self.scenario)
-            self.project._compute_and_save_cost_reports(self.scenario)
+        self._seed_schedule()
+        self.project._compute_and_save_cost_reports(self.scenario)
+        self.project._compute_and_save_cost_reports(self.scenario)
 
         assets = self.env['knowledge.asset'].search([
             ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.scenario.id),

@@ -406,15 +406,6 @@ class ProjectProject(models.Model):
     # binario Low/High): 800 alcanza para que gane contención de recursos
     # frente a cualquier tarea que se quede en el default implícito.
     _TJP_HIGH_PRIORITY = 800
-    # Cuentas/reportes del desglose de costo (ver _generate_cost_report_tjp
-    # / _tj_cost_by_phase_and_skill) — separadas de _TJP_COST_ACCOUNT_ID
-    # (el schedule normal). Las hojas se nombran phase_<task.id>/
-    # skill_<skill.id> para poder mapear de vuelta al registro real al
-    # parsear la columna 'id' del accountreport.
-    _TJP_PHASE_ACCOUNT_ID = 'by_phase'
-    _TJP_SKILL_ACCOUNT_ID = 'by_skill'
-    _TJP_PHASE_REPORT_ID = 'cost_by_phase'
-    _TJP_SKILL_REPORT_ID = 'cost_by_skill'
 
     def _tjp_cost_account(self):
         """Cuenta de costo declarada una sola vez para que la columna 'cost' de
@@ -639,7 +630,7 @@ class ProjectProject(models.Model):
             ]
         return lines
 
-    def _tjp_task_block(self, task, depth=0, now_date=None, extra_chargeset_fn=None):
+    def _tjp_task_block(self, task, depth=0, now_date=None):
         if now_date is None:
             now_date = self._tjp_now_date()
         t_id = self._tjp_task_id(task)
@@ -661,14 +652,6 @@ class ProjectProject(models.Model):
             # chargeset se hereda a las subtareas; alcanza con declararlo una
             # sola vez en la tarea raíz para que 'cost' se acumule correctamente.
             lines.append(f'{ind}  chargeset {self._TJP_COST_ACCOUNT_ID}')
-        # Hook para los reportes de costo por fase/skill (ver
-        # _generate_cost_report_tjp): una tarea puede tener cualquier
-        # cantidad de `chargeset`, uno por cada cuenta de nivel superior
-        # distinta (confirmado contra el binario real) — no interfiere con
-        # el chargeset de 'cost' de arriba.
-        if extra_chargeset_fn:
-            for cl in extra_chargeset_fn(task, depth):
-                lines.append(f'{ind}  {cl}')
 
         child_tasks = task.child_ids.filtered(
             lambda t: t.project_id == self
@@ -738,10 +721,7 @@ class ProjectProject(models.Model):
 
         # Subtasks (recursive)
         for child in child_tasks:
-            lines += self._tjp_task_block(
-                child, depth=depth + 1, now_date=now_date,
-                extra_chargeset_fn=extra_chargeset_fn,
-            )
+            lines += self._tjp_task_block(child, depth=depth + 1, now_date=now_date)
 
         lines.append(f'{ind}}}')
         lines.append('')
@@ -917,179 +897,47 @@ class ProjectProject(models.Model):
 
     # ── Reportes de costo (fase / skill / departamento) ─────────────────────────
     #
-    # Fase y skill se conocen antes de programar (atributos fijos de la
-    # tarea) → cuentas TJ3 reales (`account`/`chargeset`/`accountreport`),
-    # corridas en un .tjp aparte, acotado a un solo escenario, que NO
-    # escribe en insight.task.schedule. Departamento depende de quién
-    # termina realmente asignado (recién se sabe al volver el schedule) →
-    # se calcula 100% en Python sobre datos ya importados (ver
-    # _cost_by_department). Guardado como versiones de knowledge.asset
-    # (ver _get_or_create_cost_asset/_compute_and_save_cost_reports) para
-    # tener histórico navegable, no solo el último cálculo.
-
-    def _tjp_phase_skill_account_lines(self, root_tasks, skills):
-        """Declara las cuentas de nivel superior 'by_phase'/'by_skill', una
-        hoja por cada tarea raíz / skill distinta. Se omite la cuenta
-        entera si no hay nada que declarar (ej. proyecto sin ninguna
-        required_skill_ids en sus tareas)."""
-        lines = []
-        if root_tasks:
-            lines.append(f'account {self._TJP_PHASE_ACCOUNT_ID} "Por fase" {{')
-            for task in root_tasks:
-                name = (task.name or 'Fase').replace('"', "'")
-                lines.append(f'  account phase_{task.id} "{name}"')
-            lines += ['}', '']
-        if skills:
-            lines.append(f'account {self._TJP_SKILL_ACCOUNT_ID} "Por categoría" {{')
-            for skill in skills:
-                name = (skill.name or 'Skill').replace('"', "'")
-                lines.append(f'  account skill_{skill.id} "{name}"')
-            lines += ['}', '']
-        return lines
-
-    def _tjp_extra_chargeset_fn(self, leaf_task_ids):
-        """Callable para _tjp_task_block (parámetro extra_chargeset_fn):
-        cada tarea raíz suma su costo a su cuenta de fase (heredado a las
-        subtareas, igual que `cost`); cada tarea hoja con
-        required_skill_ids suma el suyo a sus cuentas de skill, repartido
-        en partes iguales entre ellas si requiere más de una (confirmado
-        contra el binario real: `chargeset a, b` sin porcentaje explícito
-        reparte parejo — no hace falta calcular el % a mano)."""
-        def fn(task, depth):
-            lines = []
-            if depth == 0:
-                lines.append(f'chargeset phase_{task.id}')
-            if task.id in leaf_task_ids and task.required_skill_ids:
-                skill_accounts = ", ".join(f'skill_{sid}' for sid in task.required_skill_ids.ids)
-                lines.append(f'chargeset {skill_accounts}')
-            return lines
-        return fn
-
-    def _tjp_accountreports(self, has_phase, has_skill):
-        """accountreport en modo normal (sin `balance` — eso solo hace
-        falta para taskreport, ver _tjp_reports). Las columnas de período
-        ('monthly') son la única forma de sacar un valor de cuenta en TJ3
-        3.8.4 (no existe una columna de 'total' plano) — vienen ACUMULADAS
-        a la fecha (confirmado contra el binario real), así que
-        _parse_accountreport_csv se queda con la última, nunca las suma."""
-        lines = []
-        if has_phase:
-            lines += [
-                f'accountreport "{self._TJP_PHASE_REPORT_ID}" {{',
-                '  formats csv',
-                f'  accountroot {self._TJP_PHASE_ACCOUNT_ID}',
-                '  columns id, bsi, name, monthly',
-                '}',
-                '',
-            ]
-        if has_skill:
-            lines += [
-                f'accountreport "{self._TJP_SKILL_REPORT_ID}" {{',
-                '  formats csv',
-                f'  accountroot {self._TJP_SKILL_ACCOUNT_ID}',
-                '  columns id, bsi, name, monthly',
-                '}',
-                '',
-            ]
-        return lines
-
-    def _generate_cost_report_tjp(self, scenario):
-        """.tjp aparte del schedule normal (_generate_tjp): acotado a UN
-        escenario, sin taskreport de schedule ni milestones — solo lo
-        necesario para los accountreport de fase/skill. No se importa a
-        insight.task.schedule; ese modelo sigue siendo dueño solo del
-        schedule real."""
-        self.ensure_one()
-        now_date = self._tjp_now_date()
-        root_tasks = self.task_ids.filtered(lambda t: not t.parent_id).sorted('sequence')
-        skills = self.task_ids.mapped('required_skill_ids')
-        leaf_task_ids = self._tjp_leaf_task_ids()
-        extra_fn = self._tjp_extra_chargeset_fn(leaf_task_ids)
-
-        lines = []
-        lines += self._tjp_project_header(scenario, now_date)
-        lines += self._tjp_cost_account()
-        lines += self._tjp_phase_skill_account_lines(root_tasks, skills)
-        lines += self._tjp_shift_declarations(now_date)
-        for user in self._tj_project_users():
-            lines += self._tjp_resource_block(user)
-        lines += self._tjp_scenario_supplement(scenario)
-        for task in root_tasks:
-            lines += self._tjp_task_block(task, depth=0, now_date=now_date, extra_chargeset_fn=extra_fn)
-        lines += self._tjp_accountreports(bool(root_tasks), bool(skills))
-        return '\n'.join(lines)
-
-    @staticmethod
-    def _parse_accountreport_csv(csv_content):
-        """Parsea un accountreport CSV ('id', 'bsi', 'name', <períodos...>)
-        a {account_id: costo_final}. Las columnas de período (ej.
-        '2026-07-01') vienen acumuladas a la fecha — el costo real de la
-        cuenta es el de la ÚLTIMA en orden cronológico, sumarlas
-        duplicaría costo."""
-        if not csv_content:
-            return {}
-        first_line = csv_content.split('\n')[0] if csv_content else ''
-        delimiter = ';' if ';' in first_line else ','
-        reader = csv.DictReader(io.StringIO(csv_content), delimiter=delimiter)
-        period_re = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-        result = {}
-        for row in reader:
-            norm = {k.strip().lower(): (v or '').strip() for k, v in row.items() if k is not None}
-            account_id = norm.get('id', '')
-            if not account_id:
-                continue
-            period_cols = sorted(k for k in norm if period_re.match(k))
-            if not period_cols:
-                continue
-            try:
-                result[account_id] = float(norm[period_cols[-1]].replace(',', ''))
-            except (ValueError, AttributeError):
-                result[account_id] = 0.0
-        return result
+    # Las 3 dimensiones se calculan 100% en Python sobre insight.task.schedule
+    # ya importado por el schedule normal (ver _import_scenario_csv) — no
+    # hace falta ninguna cuenta/chargeset/accountreport TJ3 aparte: TJ3 ya
+    # acumula el costo de las subtareas en la tarea raíz (insight.scenario
+    # .total_cost es literalmente sum(root_schedules.cost), ver
+    # _compute_scenario_aggregates), así que "costo por fase" es directamente
+    # el `cost` de cada tarea raíz. "Por skill" y "por departamento" reparten
+    # el `cost` de cada tarea hoja en partes iguales entre sus
+    # required_skill_ids / los departamentos de los recursos asignados
+    # (resource_ids) — mismo criterio en ambos casos, solo cambia el eje de
+    # agrupación. Guardado como versiones de knowledge.asset (ver
+    # _get_or_create_cost_asset/_compute_and_save_cost_reports) para tener
+    # histórico navegable, no solo el último cálculo.
 
     def _tj_cost_by_phase_and_skill(self, scenario):
-        """Corre el .tjp de _generate_cost_report_tjp contra el
-        microservicio TJ3 y devuelve ({project.task raíz: costo},
-        {hr.skill: costo}). No escribe en insight.task.schedule."""
+        """Costo por fase (tarea raíz) y por skill, ambos 100% en Python
+        sobre insight.task.schedule ya importado — devuelve ({project.task
+        raíz: costo}, {hr.skill: costo})."""
         self.ensure_one()
         if self.schedule_dirty:
             raise UserError(_(
                 'El schedule está desactualizado. Ejecute "Ejecutar '
                 'Schedule" antes de generar reportes de costos.'
             ))
-        root_tasks = self.task_ids.filtered(lambda t: not t.parent_id).sorted('sequence')
-        skills = self.task_ids.mapped('required_skill_ids')
-        if not root_tasks:
-            return {}, {}
-
-        ICP = self.env['ir.config_parameter'].sudo()
-        url = ICP.get_param('insight_project.tj_microservice_url')
-        if not url:
-            raise UserError(_('Configure la URL del microservicio TJ3 en Ajustes → TaskJuggler.'))
-        try:
-            timeout = int(ICP.get_param('insight_project.tj_microservice_timeout') or 120)
-        except (ValueError, TypeError):
-            timeout = 120
-
-        tjp_content = self._generate_cost_report_tjp(scenario)
-        response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
-        csv_files = response_data.get('csv_files', {})
+        root_task_ids = set(self.task_ids.filtered(lambda t: not t.parent_id).ids)
+        leaf_ids = self._tjp_leaf_task_ids()
 
         phase_costs = {}
-        parsed = self._parse_accountreport_csv(csv_files.get(f'{self._TJP_PHASE_REPORT_ID}.csv', ''))
-        for task in root_tasks:
-            cost = parsed.get(f'phase_{task.id}')
-            if cost is not None:
-                phase_costs[task] = cost
+        for sched in scenario.schedule_ids.filtered(lambda s: s.task_id.id in root_task_ids):
+            phase_costs[sched.task_id] = sched.cost
 
-        skill_costs = {}
-        parsed = self._parse_accountreport_csv(csv_files.get(f'{self._TJP_SKILL_REPORT_ID}.csv', ''))
-        for skill in skills:
-            cost = parsed.get(f'skill_{skill.id}')
-            if cost is not None:
-                skill_costs[skill] = cost
+        skill_costs = defaultdict(float)
+        for sched in scenario.schedule_ids.filtered(lambda s: s.task_id.id in leaf_ids):
+            skills = sched.task_id.required_skill_ids
+            if not skills:
+                continue
+            share = sched.cost / len(skills)
+            for skill in skills:
+                skill_costs[skill] += share
 
-        return phase_costs, skill_costs
+        return phase_costs, dict(skill_costs)
 
     def _cost_by_department(self, scenario):
         """Costo por departamento, 100% en Python: a diferencia de fase/

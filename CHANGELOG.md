@@ -9,6 +9,78 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.4] - 2026-07-13
+
+### Prompt
+
+> "No se puede unificar el cálculo de costos con Ejecutar schedule? Acaso
+> no estamos haciendo lo mismo antes de calcular los costos? [...]
+> Unifiquemos por favor." / "Quedo perplejo, porque cachear los costos?" /
+> "Cómo van a existir varios reportes de tipo knowledge.asset me parece
+> mas comodo que los reportes tengan sus propia hoja y salgan de
+> 'Scheduler'."
+
+### Discusión de diseño
+
+- Primer intento (descartado tras la pregunta del usuario sobre el
+  cache): declarar las cuentas TJ3 `by_phase`/`by_skill` en el MISMO
+  .tjp del schedule + un `accountreport` por escenario, cacheando el
+  resultado parseado en campos nuevos de `insight.scenario`. Se abandonó
+  al notar que `insight.task.schedule` YA trae el `cost` de cada tarea
+  (no solo hojas) desde el schedule normal — `insight.scenario.total_cost`
+  ya es literalmente `sum(root_schedules.cost)` (ver
+  `_compute_scenario_aggregates`), es decir que "costo por fase" ya es el
+  `cost` de la tarea raíz sin declarar ninguna cuenta nueva.
+- Diseño final: `_tj_cost_by_phase_and_skill` pasa a calcularse 100% en
+  Python sobre `scenario.schedule_ids`, con el mismo criterio que
+  `_cost_by_department` (ya existente): "por fase" toma el `cost` de la
+  tarea raíz tal cual; "por skill" reparte el `cost` de cada tarea hoja
+  en partes iguales entre sus `required_skill_ids`. Se elimina la
+  segunda corrida de TJ3 que hacía `_generate_cost_report_tjp`, sin
+  necesitar ningún cache intermedio: el dato persistente entre "Ejecutar
+  Schedule" y "Generar reportes de costos" es `insight.task.schedule`,
+  que ya existía.
+- Beneficio adicional (no solo de performance): antes, si
+  `tj_allocation_selection = 'random'`, cada corrida de TJ3 podía asignar
+  recursos distintos a la misma tarea — el desglose de costo por
+  fase/skill (segunda corrida) podía no coincidir con los recursos
+  realmente asignados en el schedule importado (primera corrida). Al
+  quedar todo derivado de la misma corrida, ese riesgo de inconsistencia
+  desaparece.
+- Se elimina como código muerto: `_generate_cost_report_tjp`,
+  `_tjp_phase_skill_account_lines`, `_tjp_extra_chargeset_fn`,
+  `_tjp_accountreports`, `_parse_accountreport_csv`, las constantes
+  `_TJP_PHASE_ACCOUNT_ID`/`_TJP_SKILL_ACCOUNT_ID`/`_TJP_PHASE_REPORT_ID`/
+  `_TJP_SKILL_REPORT_ID`, y el parámetro `extra_chargeset_fn` de
+  `_tjp_task_block` (sin más llamadores tras lo anterior).
+- `report_asset_ids` (la lista de reportes `knowledge.asset` del
+  proyecto) se muda de un `<field>` embebido al fondo de la pestaña
+  "Scheduler" a su propia pestaña "Reportes" en el notebook del
+  proyecto — se anticipa que crezca (el Gantt vía este mismo mecanismo
+  ya estaba anotado como próxima iteración desde v17.0.9.7.2) y no tiene
+  sentido seguir agregando reportes al fondo de una pestaña que ya tiene
+  Escenarios y Costos extra.
+
+### Cambiado
+
+- `models/project_project.py`: `_tj_cost_by_phase_and_skill` calcula fase
+  y skill 100% en Python sobre `insight.task.schedule`, sin llamar a TJ3.
+  `_generate_tjp` queda sin cambios (vuelve a ser exactamente el .tjp de
+  antes de este ciclo). Removido todo lo relacionado a las cuentas
+  TJ3 `by_phase`/`by_skill` (ver arriba).
+- `views/project_project_views.xml`: nueva pestaña "Reportes"
+  (`name="insight_reports"`), separada de "Scheduler"; `report_asset_ids`
+  se mudó ahí.
+- `tests/test_cost_reports.py`: `TestTjpPhaseSkillAccountLines`,
+  `TestTjpExtraChargesetFn` y `TestParseAccountreportCsv` se eliminan
+  (probaban código removido); nueva `TestCostByPhaseAndSkill` prueba
+  `_tj_cost_by_phase_and_skill` sembrando `insight.task.schedule`
+  directamente, mismo patrón que `TestCostByDepartment`.
+
+### Validación
+
+- `make test-local MODULE=insight_project`: 189/189 tests, 0 fallos.
+
 ## [17.0.9.7.3] - 2026-07-13
 
 ### Cambiado
