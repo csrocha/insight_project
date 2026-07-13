@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="report_cost_report_html" name="Reporte de costo (HTML)">
+        <html>
+            <head>
+                <meta charset="utf-8"/>
+                <title>Reportes de costo</title>
+                <style>
+                    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; background: #fafafa; }
+                    .o_cost_report { max-width: 640px; margin-bottom: 32px; }
+                    .o_cost_report h2 { font-size: 15px; margin: 0 0 4px 0; color: #212121; }
+                    .o_cost_report .o_meta { font-size: 10px; color: #9e9e9e; margin-bottom: 12px; }
+                    .o_cost_report .o_row { display: flex; align-items: center; height: 28px; }
+                    .o_cost_report .o_label { width: 220px; font-size: 12px; color: #424242; }
+                    .o_cost_report .o_bar_track { flex: 1; background: #eeeeee; height: 18px; border-radius: 3px; overflow: hidden; }
+                    .o_cost_report .o_bar_fill { background: #1e88e5; height: 100%; border-radius: 3px; }
+                    .o_cost_report .o_value { width: 140px; text-align: right; font-size: 11px; color: #212121; padding-left: 8px; }
+                    .o_cost_report .o_empty { font-size: 12px; color: #757575; }
+                </style>
+            </head>
+            <body>
+                <t t-foreach="reports" t-as="report">
+                    <div class="o_cost_report">
+                        <h2 t-esc="report['title']"/>
+                        <div class="o_meta">
+                            Total: <t t-esc="'%.2f' % report['total']"/> <t t-esc="report['currency']"/>
+                            — Generado: <t t-esc="report['generated_at']"/>
+                        </div>
+                        <t t-if="not report['rows']">
+                            <div class="o_empty">Sin datos.</div>
+                        </t>
+                        <t t-foreach="report['rows']" t-as="row">
+                            <div class="o_row">
+                                <div class="o_label" t-esc="row['label']"/>
+                                <div class="o_bar_track">
+                                    <div class="o_bar_fill" t-attf-style="width: #{row['percent']}%;"/>
+                                </div>
+                                <div class="o_value">
+                                    <t t-esc="'%.2f' % row['cost']"/> <t t-esc="report['currency']"/>
+                                </div>
+                            </div>
+                        </t>
+                    </div>
+                </t>
+            </body>
+        </html>
+    </template>
+</odoo>

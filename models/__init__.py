@@ -5,6 +5,7 @@ from . import insight_task_schedule
 from . import insight_task_dependency
 from . import insight_employee_shift
 from . import project_project
+from . import report_cost_report
 from . import project_task
 from . import project_milestone
 from . import insight_import_wizard

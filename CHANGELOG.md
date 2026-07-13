@@ -9,6 +9,76 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.2] - 2026-07-13
+
+### Prompt
+
+> "Voy a necesitar cosas dinámicas [...] Yo al asset lo dejaría tal como
+> está, no lo relacionaría con el render. Es el QWeb quien sabe como
+> renderear [...] Me gusta la salida de asset_category en
+> ir.actions.report; mas natural imposible. Probemos este aproach. Agrega
+> asset_category en el addon de knowledge_asset. Luego agrega a
+> insight_project el ir.action.report acorde a cada reporte generado, con
+> un qweb que sea de tipo html. Y deja un botón en los reportes para
+> acceder al reporte html. Por ahora solo en costos, vamos a probar ahí."
+
+### Discusión de diseño
+
+- Reemplaza el controller propio `/insight_project/cost_report/<id>`
+  (SVG armado a mano con f-strings, sin QWeb) por el mecanismo genérico
+  discutido con el usuario: `ir.actions.report` + el nuevo campo
+  `asset_category` de `knowledge_asset` (ver su CHANGELOG v17.0.1.0.4).
+  `insight_project` no escribe ningún controller propio — reusa el
+  controller nativo de Odoo (`/report/<type>/<reportname>/<docids>`, ya
+  con manejo de acceso vía el `ir.rule` del modelo, mismo criterio
+  "todo o nada" que ya regía en el controller descartado).
+- `report.insight_project.report_cost_report_html` (`_get_report_values`)
+  hace el trabajo de armar filas/porcentajes de barra en Python — el
+  QWeb (`report/report_cost_report_templates.xml`) solo itera y escapa
+  (`t-esc`), sin lógica de negocio adentro. Mismo criterio que ya se
+  usaba en el controller viejo, solo que ahora la "vista" es
+  declarativa.
+- `ir.actions.report` con `model='knowledge.asset'` y
+  `asset_category='insight_project.cost_report'`: una sola acción sirve
+  para las 3 dimensiones (fase/skill/departamento) porque comparten el
+  mismo *schema* de payload (`title`/`currency`/`items`/`total`/
+  `generated_at`) — no hace falta una acción por dimensión.
+- Botón "Ver reporte" agregado directo en el `<tree>` embebido de
+  `report_asset_ids` (pestaña Scheduler), llamando al método genérico
+  `knowledge.asset.action_open_category_report()` — `insight_project` no
+  necesita ningún método propio de apertura, solo declarar la acción con
+  la categoría correcta.
+- Primer caso de uso de este mecanismo (costos); el Gantt vía este mismo
+  mecanismo queda para una iteración siguiente, una vez validado acá.
+
+### Cambiado
+
+- Se elimina `controllers/main.py::InsightProjectCostReport` y
+  `_render_bar_chart` (reemplazados por `ir.actions.report` + QWeb).
+
+### Agregado
+
+- `report.insight_project.report_cost_report_html`
+  (`models/report_cost_report.py`): prepara filas/porcentajes desde el
+  payload de la última versión del asset.
+- `report/report_cost_report_templates.xml`: template QWeb
+  `insight_project.report_cost_report_html` (barras de costo, HTML puro,
+  sin JS).
+- `report/report_cost_report_actions.xml`:
+  `action_report_cost_report_html` (`ir.actions.report`,
+  `report_type='qweb-html'`, `asset_category='insight_project.cost_report'`).
+- Botón "Ver reporte" en la lista de `report_asset_ids` (pestaña
+  Scheduler).
+
+### Validación
+
+- `make test-local MODULE=insight_project`: 188/188 tests, 0 fallos.
+- Verificado en shell: `asset.action_open_category_report()` devuelve una
+  action `ir.actions.report` apuntando al template correcto;
+  `ir.actions.report._render_qweb_html(...)` produce el HTML esperado
+  (título, total, barras con porcentaje relativo correcto — 5000 vs 3000
+  → 100%/60%).
+
 ## [17.0.9.7.1] - 2026-07-13
 
 ### Prompt

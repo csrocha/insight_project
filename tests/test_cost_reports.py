@@ -284,6 +284,73 @@ class TestComputeAndSaveCostReports(TransactionCase):
         self.assertEqual(count, 0)
 
 
+class TestReportCostReportHtml(TransactionCase):
+    """report.insight_project.report_cost_report_html: arma filas/
+    porcentajes desde el payload del asset — el QWeb del template solo
+    itera lo que este método ya preparó."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Report Model Project', 'is_tj_enabled': True,
+        })
+        cls.scenario = cls.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        })
+        cls.asset = cls.env['knowledge.asset'].create({
+            'name': 'Costo por fase', 'res_model': 'insight.scenario',
+            'res_id': cls.scenario.id, 'category': 'insight_project.cost_report',
+            'tags': 'phase',
+        })
+        cls.asset.create_version({
+            'title': 'Costo por fase', 'currency': 'ARS',
+            'generated_at': '2026-07-13 20:00:00',
+            'items': [{'label': 'Fase 1', 'cost': 5000.0}, {'label': 'Fase 2', 'cost': 3000.0}],
+            'total': 8000.0,
+        }, schema='insight_project.cost_by_phase')
+
+    def test_get_report_values_returns_docs_and_reports(self):
+        Report = self.env['report.insight_project.report_cost_report_html']
+        values = Report._get_report_values(self.asset.ids)
+        self.assertEqual(values['docs'], self.asset)
+        self.assertEqual(len(values['reports']), 1)
+        report = values['reports'][0]
+        self.assertEqual(report['title'], 'Costo por fase')
+        self.assertEqual(report['total'], 8000.0)
+        self.assertEqual(len(report['rows']), 2)
+
+    def test_bar_percent_is_relative_to_max(self):
+        Report = self.env['report.insight_project.report_cost_report_html']
+        report = Report._get_report_values(self.asset.ids)['reports'][0]
+        by_label = {row['label']: row['percent'] for row in report['rows']}
+        self.assertEqual(by_label['Fase 1'], 100.0)
+        self.assertEqual(by_label['Fase 2'], 60.0)
+
+    def test_asset_without_version_yields_empty_rows(self):
+        empty_asset = self.env['knowledge.asset'].create({
+            'name': 'Sin versión', 'category': 'insight_project.cost_report',
+        })
+        Report = self.env['report.insight_project.report_cost_report_html']
+        report = Report._get_report_values(empty_asset.ids)['reports'][0]
+        self.assertEqual(report['rows'], [])
+
+    def test_action_open_category_report_resolves_to_html_action(self):
+        action = self.asset.action_open_category_report()
+        self.assertEqual(action['type'], 'ir.actions.report')
+        self.assertEqual(action['report_name'], 'insight_project.report_cost_report_html')
+
+    def test_render_qweb_html_produces_expected_markup(self):
+        html = self.env['ir.actions.report']._render_qweb_html(
+            'insight_project.report_cost_report_html', self.asset.ids,
+        )[0]
+        html_text = html.decode() if isinstance(html, bytes) else html
+        self.assertIn('Costo por fase', html_text)
+        self.assertIn('Fase 1', html_text)
+        self.assertIn('width: 100.0%', html_text)
+        self.assertIn('width: 60.0%', html_text)
+
+
 class TestActionGenerateCostReportsGuards(TransactionCase):
 
     @classmethod
