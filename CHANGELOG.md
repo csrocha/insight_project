@@ -70,6 +70,35 @@ para trazabilidad completa del razonamiento de agentes de IA.
   genérico del microservicio TJ3 ahora quedan asentados en el chatter
   del proyecto (antes solo el caso de "unscheduled tasks" lo hacía).
 
+### Adenda (misma versión, trabajo concurrente de otra sesión)
+
+Mientras se investigaba este fix, en otra sesión en paralelo (mismo
+directorio de trabajo) se encontró y corrigió un bug no relacionado, que
+terminó empaquetado en este mismo commit al compartir el working tree:
+
+- **`insight.task.schedule.cost` venía siendo 0 en todo reschedule real**:
+  el `taskreport` nunca declaraba `balance`, así que la columna `cost` de
+  TJ3 devolvía el string literal `"No 'balance' defined!"` en vez de un
+  número — `_parse_tj_cost` lo interpretaba silenciosamente como `0.0`.
+  Además, sin un `currencyformat` explícito, TJ3 usa el separador
+  decimal del locale del contenedor (coma, ej. `"300,00"`), que
+  `_parse_tj_cost` habría leído como separador de miles (100 veces más
+  grande) si el `balance` hubiera estado seteado con el locale por
+  default.
+- Fix: `_tjp_cost_account` declara una cuenta `revenue` dummy (nunca se
+  le carga nada, solo existe porque `balance` exige dos cuentas de nivel
+  superior); `_tjp_project_header` agrega
+  `currencyformat "-" "" "" "." 2` (punto decimal, sin separador de
+  miles); `_tjp_reports` agrega `balance cost revenue` a ambos
+  taskreports. Validado contra el binario real: con el fix, una tarea de
+  5 días a $800/día devuelve `4000.0` (número plano, sin comillas) en
+  vez del string de error.
+- Prerequisito real para el desglose de costos por departamento (item #9
+  del backlog TJ3), que depende de que `sched.cost` sea correcto — y
+  también corrige `insight.scenario.total_cost`/`grand_total_cost`
+  (usados en la selección automática de escenario), que hasta ahora
+  nunca reflejaban costo laboral real.
+
 ---
 
 ## [17.0.9.6.11] - 2026-07-12
