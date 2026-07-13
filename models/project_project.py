@@ -49,6 +49,10 @@ class ProjectProject(models.Model):
     cost_budget_ids = fields.One2many(
         'insight.cost.budget', 'project_id', string='Costos extra (infra/SaaS)',
     )
+    report_asset_ids = fields.Many2many(
+        'knowledge.asset', string='Reportes de costos',
+        compute='_compute_report_asset_ids',
+    )
     schedule_dirty = fields.Boolean(string='Schedule desactualizado')
     last_scheduled = fields.Datetime(string='Último schedule', readonly=True)
     tj_allocation_selection = fields.Selection(
@@ -1186,13 +1190,22 @@ class ProjectProject(models.Model):
         """Wrapper de conveniencia sobre el proyecto: resuelve el
         escenario baseline y delega en insight.scenario (que es el dueño
         real de la acción, ver models/insight_scenario.py) — así el botón
-        de un escenario puntual y el de la pestaña TaskJuggler del
+        de un escenario puntual y el de la pestaña Scheduler del
         proyecto hacen exactamente lo mismo."""
         self.ensure_one()
         scenario = self.scenario_ids.filtered('is_baseline')[:1]
         if not scenario:
             raise UserError(_('No hay un escenario baseline. Ejecute el schedule primero.'))
         return scenario.action_generate_cost_reports()
+
+    def _compute_report_asset_ids(self):
+        Asset = self.env['knowledge.asset']
+        for project in self:
+            project.report_asset_ids = Asset.search([
+                ('res_model', '=', 'insight.scenario'),
+                ('res_id', 'in', project.scenario_ids.ids),
+                ('category', '=', self._TJP_COST_REPORT_CATEGORY),
+            ])
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

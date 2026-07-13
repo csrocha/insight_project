@@ -9,6 +9,55 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.1] - 2026-07-13
+
+### Prompt
+
+> "Podríamos dejar los knowledge.assets que sean reportes de un projecto
+> en la hoja TaskJuggler, debajo de Costos Extras. Y podríamos cambiar el
+> nombre de la hoja de Task Juggler a Scheduler, te parece?"
+
+### Discusión de diseño
+
+- Los reportes de costo (`knowledge.asset`, ver v17.0.9.7.0) se generan
+  con `res_model='insight.scenario'`, no `'project.project'` — no había
+  ninguna vista a nivel proyecto que los agregara a través de todos los
+  escenarios. Se agregó `project.project.report_asset_ids` (Many2many
+  `knowledge.asset`, computado, no almacenado — mismo patrón sin
+  `@api.depends` que `insight.scenario.cost_report_count`, porque ninguno
+  de los dos puede expresar su dependencia real vía el grafo de ORM) que
+  busca los assets de categoría `_TJP_COST_REPORT_CATEGORY` cuyo
+  `res_id` esté entre los escenarios del proyecto.
+- Se embebió como lista de solo lectura (`create="0" delete="0"`) debajo
+  de "Costos extra (infra/SaaS)", tal cual lo pidió el usuario — abrir un
+  registro de la lista lleva a la vista propia de `knowledge.asset` (no
+  se construyó una vista dedicada al reporte renderizado; eso ya existe
+  vía el controller `/insight_project/cost_report/<id>`).
+- Renombrado el label de la pestaña de "TaskJuggler" a "Scheduler" (el
+  `name="tashjuggler"` interno del `<page>` se dejó igual a propósito —
+  es solo la clave de persistencia de la pestaña activa en el navegador,
+  cambiarlo no aporta nada y evita invalidar preferencias de UI ya
+  guardadas).
+
+### Agregado
+
+- `project.project.report_asset_ids` + `_compute_report_asset_ids`:
+  reportes de costo del proyecto, agregados a través de todos sus
+  escenarios.
+- Vista: sección "Reportes" debajo de "Costos extra (infra/SaaS)" en la
+  pestaña Scheduler, listando `report_asset_ids`.
+
+### Cambiado
+
+- Label de la pestaña TaskJuggler → "Scheduler" en el form de
+  `project.project` (`name` interno sin cambios).
+
+### Validación
+
+- `make test-local MODULE=insight_project`: 188/188 tests, 0 fallos.
+- `get_views()` del form de `project.project` confirmado sin errores de
+  arch tras el cambio de vista.
+
 ## [17.0.9.7.0] - 2026-07-13
 
 ### Prompt

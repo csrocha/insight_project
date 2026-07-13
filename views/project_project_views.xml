@@ -6,7 +6,7 @@
         <field name="inherit_id" ref="project.edit_project"/>
         <field name="arch" type="xml">
             <xpath expr="//notebook" position="inside">
-                <page string="TaskJuggler" name="tashjuggler">
+                <page string="Scheduler" name="tashjuggler">
                     <group>
                         <group>
                             <field name="is_tj_enabled"/>
@@ -71,6 +71,14 @@
                             <field name="periodicity"/>
                             <field name="amount"/>
                             <field name="currency_id" groups="base.group_multi_currency"/>
+                        </tree>
+                    </field>
+                    <separator string="Reportes" invisible="not is_tj_enabled"/>
+                    <field name="report_asset_ids" nolabel="1" invisible="not is_tj_enabled">
+                        <tree create="0" delete="0" open="1">
+                            <field name="name"/>
+                            <field name="tags"/>
+                            <field name="write_date" string="Última versión"/>
                         </tree>
                     </field>
                 </page>
