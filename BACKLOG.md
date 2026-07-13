@@ -16,19 +16,12 @@ lugares, avisá y las agrego.
 
 ## Recuperadas de conversaciones anteriores
 
-### 1. Dependencia Finish→Finish (FF) real
+### ~~1. Dependencia Finish→Finish (FF) real~~ — RESUELTO
 
-Hoy `tj_dependency_type='FF'` falla explícito en el export
-(`_tjp_task_block`, `project_project.py`) en vez de exportar algo que TJ3
-ignore en silencio. Pero un FF genuino es posible: un hito sintético que
-dependa de ambas tareas, combinado con `scheduling alap` en la tarea
-dependiente (para que el motor la calcule hacia atrás en vez de hacia
-adelante). Se descartó implementarlo de una porque `alap` cambia el modo
-de planificación de *toda* la tarea, no solo la arista FF puntual, y
-puede interactuar de forma no obvia con sus otras dependencias FS/SS.
-Queda como cambio dedicado, con sus propios tests de esa interacción.
-
-_Fuente: CHANGELOG.md [17.0.9.6.0], sección "Discusión de diseño"._
+Resuelto en v17.0.9.6.9/.10 (2026-07-11): no hizo falta el hito
+sintético+`alap` que se especulaba acá — `precedes {onend}` alcanza por
+sí solo. Ver CHANGELOG.md [17.0.9.6.10] y memoria
+`project_tj3_feature_backlog`.
 
 ### 2. Gaps del wizard de import de `.tjp` externos
 
@@ -85,6 +78,15 @@ fechas o la asignación de recursos de otros proyectos "running". Falta
 decidir quién dispara ese reschedule combinado (¿cron nocturno? ¿botón
 manual con aviso a los demás project managers?) antes de construirlo.
 
+**Nota (2026-07-13):** existe una versión más completa de este diseño (3
+estados: draft/en evaluación/en progreso, con mensaje de impacto cruzado
+en el chatter) documentada en la memoria `project_portfolio_scheduling_states`
+— no implementada tampoco, es la referencia a usar si se retoma este ítem.
+Si el multi-proyecto completo resulta demasiado grande para atacar de una,
+el ítem 5 de abajo (prioridad entre proyectos como desempate) es un primer
+paso más chico que no requiere agregar todos los proyectos a un único
+`.tjp`.
+
 ---
 
 ## De la conversación de hoy (2026-07-10)
@@ -113,6 +115,65 @@ pero hay 3 fricciones que hacen que no sea un cambio chico:
 _Fuente: pregunta del usuario en la sesión del ítem "limits" (2026-07-10),
 sin implementar todavía — queda para validar la política de costeo antes
 de tocar código._
+
+---
+
+## Del backlog de ecosistema (2026-07-13)
+
+Ítems recibidos como propuesta de "nivel profesional superior" para todo el
+ecosistema (`insight_project`, `project_improve`, `insight_project_purchase`,
+`work_item_*`, `knowledge_asset`, `odoo_ai_core`). Los que tocan otro módulo
+están en el `BACKLOG.md` de ese módulo; acá solo lo que es de
+`insight_project`. Visión completa (con los ítems de módulos nuevos que
+todavía no existen — riesgos, EVM/ventas, portal, IA) en la memoria
+`project_ecosystem_roadmap`.
+
+### 5. Prioridad entre proyectos como desempate de recursos
+
+Hoy, en modo ejecución, todos los proyectos compiten por los mismos
+candidatos sin ningún criterio de desempate — es la brecha de mayor
+impacto detectada en la auditoría del ecosistema. Depende de un campo
+nuevo en `project.project` (`resource_priority`, ver `project_improve/
+BACKLOG.md`); acá el trabajo es usarlo en el punto donde
+`_apply_selection_strategy()`/la resolución de `resource_pool_ids`
+compartidos resuelve conflictos entre proyectos — hoy esa resolución es
+estrictamente intra-proyecto (`project_project.py:1349-1387`, nunca mira
+otros `project.project`). Criterio de aceptación: dado un empleado
+candidato en dos proyectos con distinta prioridad, el de mayor prioridad
+se queda con el recurso en el cálculo automático.
+
+Es un primer paso más chico que el ítem 3 de arriba (portfolio completo):
+no requiere unificar todos los proyectos en un solo `.tjp`, solo usar la
+prioridad como criterio de desempate donde ya se resuelven pools
+compartidos.
+
+### 6. Lock/freeze de un escenario al marcarlo baseline
+
+Hoy `is_baseline` (`insight_scenario.py`) es un booleano sin ninguna
+protección: cada re-import/reschedule (`_import_scenario_csv`,
+`project_project.py:1436-1442`) borra y recrea `schedule_ids` del mismo
+escenario sin importar si es baseline o no — no hay forma de comparar
+"cómo se aprobó el proyecto" contra "cómo está ahora" porque el baseline
+se pisa solo. Idea: al marcar/aprobar un escenario como baseline, congelar
+una copia inmutable de fechas/costos, mismo patrón que
+`knowledge.asset.version.write()` (bloquea todo salvo `state`) — ya usado
+en el módulo `knowledge_asset` que `insight_project` ya consume (ver
+`_get_or_create_cost_asset`/`_compute_and_save_cost_reports`, v17.0.9.7.0).
+
+### 7. Reporte de desviación baseline vs. real (+ publicación como knowledge.asset)
+
+Depende del ítem 6 (necesita un baseline congelado contra qué comparar).
+Generar automáticamente el delta (fechas, costo, avance) entre el
+baseline y el estado actual del proyecto, sin depender de comparar dos
+reportes a mano. Publicar cada corte de comparación como
+`knowledge.asset` versionado — mismo patrón ya implementado para
+`_compute_and_save_cost_reports`, pero acá con `category` propia (ej.
+`insight_project.deviation_report`) en vez de reusar la de costos.
+
+_Fuente: backlog de ecosistema propuesto por el usuario (2026-07-13,
+"Épica 1" ítem 2 y "Épica 2" completa). Ver `project_ecosystem_roadmap` en
+memoria para el resto de las épicas (riesgos, EVM, portal, IA), que no
+tienen todavía un módulo/archivo `BACKLOG.md` propio._
 
 ---
 
