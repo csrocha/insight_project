@@ -202,11 +202,13 @@ class ProjectProject(models.Model):
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.ConnectionError:
-            raise UserError(
-                _('No se pudo conectar con el microservicio TJ3 en %s.') % base_url
-            )
+            message = _('No se pudo conectar con el microservicio TJ3 en %s.') % base_url
+            self._tj_post_error(message)
+            raise UserError(message)
         except requests.exceptions.Timeout:
-            raise UserError(_('Timeout esperando respuesta del microservicio TJ3.'))
+            message = _('Timeout esperando respuesta del microservicio TJ3.')
+            self._tj_post_error(message)
+            raise UserError(message)
         except requests.exceptions.HTTPError as e:
             detail = ''
             try:
@@ -221,7 +223,19 @@ class ProjectProject(models.Model):
                 message = self._tj_unscheduled_message(n_unscheduled)
                 self.message_post(body=Markup('<br/>').join(message.split('\n')))
                 raise UnscheduledTasksError(n_unscheduled, message)
-            raise UserError(_('Error del microservicio TJ3: %s\n%s') % (str(e), detail))
+            message = _('Error del microservicio TJ3: %s\n%s') % (str(e), detail)
+            self._tj_post_error(message)
+            raise UserError(message)
+
+    def _tj_post_error(self, message):
+        """Deja constancia en el chatter de cualquier fallo al llamar al
+        microservicio TJ3 (conexión, timeout, o error genérico de scheduling
+        como un .tjp mal formado) — sin esto, el error solo se ve como un
+        popup momentáneo en el momento y no queda ningún rastro para
+        diagnosticarlo después (el caso de "unscheduled tasks" ya lo hacía;
+        acá se extiende a los demás)."""
+        if self.id:
+            self.message_post(body=Markup('<br/>').join(message.split('\n')))
 
     _TJ_UNSCHEDULED_RE = re.compile(r'(\d+)\s+tasks? could not be scheduled')
 
@@ -347,6 +361,13 @@ class ProjectProject(models.Model):
             f'  timezone "{tz}"',
             f'  now {now_date}',
             f'  currency "{currency}"',
+            # Fuerza un formato numérico plano (punto decimal, sin separador
+            # de miles) para las columnas de costo de los reportes — sin
+            # esto, TJ3 usa el separador decimal del locale del contenedor
+            # (confirmado contra el binario real: coma decimal, ej.
+            # "300,00"), que _parse_tj_cost interpretaría como separador de
+            # miles y leería 100 veces más grande de lo real.
+            '  currencyformat "-" "" "" "." 2',
         ]
         if not scenarios:
             lines.append('  scenario plan "Plan"')
@@ -370,6 +391,12 @@ class ProjectProject(models.Model):
         return lines
 
     _TJP_COST_ACCOUNT_ID = 'cost'
+    # Cuenta "revenue" dummy: nunca se le carga nada (no facturamos vía TJ3),
+    # existe solo porque `balance` exige dos cuentas de nivel superior — sin
+    # `balance`, la columna `cost` del taskreport devuelve el string literal
+    # "No 'balance' defined!" en vez de un número (confirmado contra el
+    # binario real).
+    _TJP_REVENUE_ACCOUNT_ID = 'revenue'
     # TJ3 priority es un entero 1-1000, default 500 si no se declara. Solo
     # emitimos la línea para 'Important' (task.priority nativo de Odoo es
     # binario Low/High): 800 alcanza para que gane contención de recursos
@@ -379,8 +406,13 @@ class ProjectProject(models.Model):
     def _tjp_cost_account(self):
         """Cuenta de costo declarada una sola vez para que la columna 'cost' de
         los reportes tenga algo contra qué acumular (ver _tjp_task_block, que
-        le asigna 'chargeset' a cada tarea raíz)."""
-        return [f'account {self._TJP_COST_ACCOUNT_ID} "Costo"', '']
+        le asigna 'chargeset' a cada tarea raíz), más la cuenta "revenue"
+        dummy que solo existe para poder declarar `balance` (ver _tjp_reports)."""
+        return [
+            f'account {self._TJP_COST_ACCOUNT_ID} "Costo"',
+            f'account {self._TJP_REVENUE_ACCOUNT_ID} "Ingresos"',
+            '',
+        ]
 
     def _tjp_shift_declarations(self, now_date=None, users=None):
         """Bloques `shift` reusables (uno por cada resource.calendar
@@ -696,7 +728,26 @@ class ProjectProject(models.Model):
         tarea, agrupado por (usuario, día). Solo se consideran días hasta
         `now_date` — TJ3 no acepta bookings en el futuro respecto a `now`.
         Con al menos un booking, TJ3 activa "projection mode" y resta ese
-        trabajo del `effort` total al planificar lo que falta."""
+        trabajo del `effort` total al planificar lo que falta.
+
+        TJ3 exige que la duración de un booking sea múltiplo exacto del
+        timingresolution del proyecto (60 min, default/máximo de TJ3 — no se
+        baja porque penaliza mucho la performance del scheduler en un
+        horizonte de varios años). Los timesheets con minutos sueltos (ej.
+        0.14h) se truncan a la hora entera, y el truncamiento se aplica sobre
+        la suma ya agrupada por (usuario, día), no por cada línea de
+        timesheet individual, para no perder minutos de más de lo necesario.
+
+        `overtime 2`: un timesheet puede superar la capacidad de calendario
+        del recurso ese día (alguien trabajó de más, o imputó horas en un
+        feriado/licencia) — es trabajo que ya sucedió, no algo que deba
+        cumplir el calendario. Sin `overtime`, TJ3 intenta completar la
+        duración pedida derramándose al próximo día hábil con lugar; si ese
+        día cae en o después de `now` (típico si el derrame llega justo al
+        día actual, ya que fines de semana/feriados no tienen capacidad),
+        falla con "has no duty". `overtime 2` deja que la duración se
+        cubra dentro del mismo día usando horas fuera de calendario
+        (incluida licencia si hiciera falta), evitando ese derrame."""
         hours_by_user_date = defaultdict(float)
         for line in task.timesheet_ids:
             if not line.user_id or not line.date or line.date > now_date:
@@ -707,10 +758,11 @@ class ProjectProject(models.Model):
         for (user, date), hours in sorted(
             hours_by_user_date.items(), key=lambda kv: (kv[0][1], kv[0][0].id)
         ):
-            if hours <= 0:
+            whole_hours = int(hours)
+            if whole_hours <= 0:
                 continue
             res_id = self._tjp_resource_id(user.partner_id.id)
-            lines.append(f'booking {res_id} {date} +{hours:.2f}h')
+            lines.append(f'booking {res_id} {date} +{whole_hours}.00h {{ overtime 2 }}')
         return lines
 
     def _tjp_milestone_block(self, milestone):
@@ -810,10 +862,16 @@ class ProjectProject(models.Model):
         """One taskreport per scenario so each CSV file maps to exactly one scenario."""
         if scenarios is None:
             scenarios = self.scenario_ids
+        # balance es lo que hace que la columna 'cost' devuelva un número en
+        # vez del string literal "No 'balance' defined!" (confirmado contra
+        # el binario real) — 'revenue' es la cuenta dummy de _tjp_cost_account,
+        # nunca se le carga nada, solo existe porque balance exige 2 cuentas.
+        balance_line = f'  balance {self._TJP_COST_ACCOUNT_ID} {self._TJP_REVENUE_ACCOUNT_ID}'
         if not scenarios:
             return [
                 'taskreport "schedule_plan" {',
                 '  formats csv',
+                balance_line,
                 '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness, complete',
                 '  scenarios plan',
                 '}',
@@ -825,6 +883,7 @@ class ProjectProject(models.Model):
             lines += [
                 f'taskreport "schedule_{sc_id}" {{',
                 '  formats csv',
+                balance_line,
                 '  columns id, bsi, name, start, end, effort, duration, cost, resources, criticalness, complete',
                 f'  scenarios {sc_id}',
                 '}',

@@ -122,15 +122,49 @@ class TestCallTjMicroservice(TransactionCase):
         self.assertEqual(called_kwargs['json'], {'tjp_content': 'project p1 {}', 'timeout': 60})
         self.assertEqual(called_kwargs['timeout'], 75)
 
+    def _messages_on_project(self):
+        return self.env['mail.message'].search([
+            ('model', '=', 'project.project'), ('res_id', '=', self.project.id),
+        ])
+
     def test_connection_error_raises_user_error(self):
         with patch('requests.post', side_effect=requests.exceptions.ConnectionError()):
             with self.assertRaises(UserError):
                 self.project._call_tj_microservice('http://tj3.local', 'project p1 {}', 60)
 
+    def test_connection_error_posts_a_message_on_the_project(self):
+        # Plain try/except, no assertRaises(): ver comentario en
+        # test_unscheduled_tasks_error_posts_a_message_on_the_project — el
+        # savepoint de assertRaises revertiría el message_post.
+        with patch('requests.post', side_effect=requests.exceptions.ConnectionError()):
+            try:
+                self.project._call_tj_microservice('http://tj3.local', 'project p1 {}', 60)
+                raised = False
+            except UserError:
+                raised = True
+        self.assertTrue(raised)
+        self.assertTrue(
+            self._messages_on_project().filtered(lambda m: 'tj3.local' in (m.body or '')),
+            'Un error de conexión al microservicio TJ3 debe quedar asentado en el chatter',
+        )
+
     def test_timeout_raises_user_error(self):
         with patch('requests.post', side_effect=requests.exceptions.Timeout()):
             with self.assertRaises(UserError):
                 self.project._call_tj_microservice('http://tj3.local', 'project p1 {}', 60)
+
+    def test_timeout_posts_a_message_on_the_project(self):
+        with patch('requests.post', side_effect=requests.exceptions.Timeout()):
+            try:
+                self.project._call_tj_microservice('http://tj3.local', 'project p1 {}', 60)
+                raised = False
+            except UserError:
+                raised = True
+        self.assertTrue(raised)
+        self.assertTrue(
+            self._messages_on_project().filtered(lambda m: 'Timeout' in (m.body or '')),
+            'Un timeout del microservicio TJ3 debe quedar asentado en el chatter',
+        )
 
     def test_generic_http_error_includes_detail(self):
         error_response = MagicMock()
@@ -142,6 +176,28 @@ class TestCallTjMicroservice(TransactionCase):
             with self.assertRaises(UserError) as ctx:
                 self.project._call_tj_microservice('http://tj3.local', 'project p1 {}', 60)
         self.assertIn('malformed tjp', str(ctx.exception))
+
+    def test_generic_http_error_posts_a_message_on_the_project(self):
+        """Este es el caso que faltaba: un error de parseo/scheduling de TJ3
+        (.tjp mal formado, 'no duty', timing resolution, etc.) que no matchea
+        el patrón de 'unscheduled tasks' antes no dejaba ningún rastro en el
+        chatter — solo un popup momentáneo que se perdía apenas se cerraba."""
+        error_response = MagicMock()
+        error_response.json.return_value = {'detail': {'error': 'malformed tjp'}}
+        http_error = requests.exceptions.HTTPError(response=error_response)
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = http_error
+        with patch('requests.post', return_value=mock_response):
+            try:
+                self.project._call_tj_microservice('http://tj3.local', 'project p1 {}', 60)
+                raised = False
+            except UserError:
+                raised = True
+        self.assertTrue(raised)
+        self.assertTrue(
+            self._messages_on_project().filtered(lambda m: 'malformed tjp' in (m.body or '')),
+            'Un error genérico del microservicio TJ3 debe quedar asentado en el chatter',
+        )
 
     def _mock_unscheduled_response(self, n):
         error_response = MagicMock()

@@ -9,6 +9,69 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.6.12] - 2026-07-13
+
+### Prompt
+
+> "Me encontré con el siguiente error: Error del microservicio TJ3: 422
+> Client Error [...] The interval duration must be a multiple of the
+> specified timing resolution (60 min) [...] booking u2 2026-07-13
+> +0.14h" → luego, tras el primer fix, un segundo error distinto en el
+> mismo proyecto: "Resource u2 has no duty at 2026-07-10-00:00--0300" →
+> "Pero es lo que trabajó. Si trabajó demás no debería descartarlo,
+> quizás esa persona trabajó 10hs para trabajar menos la semana
+> siguiente. No puede ser? Cómo aceptamos esos casos?" → finalmente,
+> tras verificar el fix end-to-end: "Veamos un tema. Veo que los
+> errores ninguno quedó asentado en el chatter!"
+
+### Discusión de diseño
+
+- `_tjp_bookings` volcaba la suma de `unit_amount` de los timesheets tal
+  cual a un `booking +{hours}h`, sin truncar contra el
+  `timingresolution` del proyecto (60 min, default *y máximo* de TJ3
+  según su documentación oficial — bajarlo tiene costo real de memoria/
+  performance en un horizonte de varios años, así que se descartó como
+  solución). Un timesheet con minutos sueltos (ej. `0.14h`) rompía el
+  parseo completo del `.tjp`.
+- El truncamiento a hora entera se aplica sobre la suma ya agrupada por
+  (usuario, día), no timesheet por timesheet — dos líneas de 0.6h
+  (1.2h reales) deben truncar a `+1.00h`, no a `0h + 0h`.
+- Descubierto un segundo bug relacionado al verificar el primero contra
+  el binario real (`tj3-ms`): un `booking` cuyas horas logueadas superan
+  la capacidad de calendario del recurso ese día (ej. 10h logueadas un
+  viernes con calendario de 9h) obliga a TJ3 a derramar el excedente al
+  próximo día hábil — si ese día cae en o después de `now` (típico
+  cruzando un fin de semana), TJ3 rechaza todo el booking con "has no
+  duty". Se descartó truncar/descartar el excedente (perdería horas
+  realmente trabajadas, posible compensación de una semana con otra) a
+  favor de `{ overtime 2 }`: atributo nativo de `booking` en TJ3 que
+  permite cubrir la duración pedida con horas fuera de calendario
+  (incluida licencia) en vez de derramar a otro día. Confirmado
+  end-to-end contra `tj3-ms` real: el mismo `.tjp` que fallaba con "no
+  duty" ahora responde `HTTP 200` con los 3 CSV de schedule.
+- `_call_tj_microservice` solo asentaba en el chatter el caso puntual de
+  "N tareas no entran en el horizonte" (`UnscheduledTasksError`) — los
+  otros tres caminos de error (conexión caída, timeout, error genérico
+  de scheduling — exactamente el tipo de error de este mismo fix) solo
+  mostraban un `UserError` como popup momentáneo, sin dejar rastro. Se
+  extendió el `message_post` a los tres caminos restantes vía un helper
+  común (`_tj_post_error`).
+
+### Corregido
+
+- `_tjp_bookings` (`project_project.py`): trunca la suma de horas por
+  (usuario, día) a la hora entera antes de emitir el `booking`, evitando
+  duraciones no múltiplo del `timingresolution` de TJ3.
+- `_tjp_bookings`: agrega `{ overtime 2 }` a cada `booking`, para que
+  horas logueadas por encima de la capacidad de calendario del recurso
+  ese día no fuercen un derrame a otro día que puede pisar `now` y
+  romper el schedule completo.
+- `_call_tj_microservice`: los errores de conexión, timeout, y error
+  genérico del microservicio TJ3 ahora quedan asentados en el chatter
+  del proyecto (antes solo el caso de "unscheduled tasks" lo hacía).
+
+---
+
 ## [17.0.9.6.11] - 2026-07-12
 
 ### Prompt

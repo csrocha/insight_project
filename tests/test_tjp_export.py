@@ -37,6 +37,14 @@ class TestTjpProjectHeader(TransactionCase):
         self.assertIn('  timezone "America/Argentina/Buenos_Aires"', lines)
         self.assertIn('  now 2026-06-29', lines)
 
+    def test_currencyformat_forces_plain_decimal_point(self):
+        """Sin esto, TJ3 usa el separador decimal del locale del contenedor
+        (confirmado contra el binario real: coma, ej. "300,00"), que
+        _parse_tj_cost interpretaría como separador de miles y leería 100
+        veces más grande de lo real."""
+        lines = self.project._tjp_project_header([])
+        self.assertIn('  currencyformat "-" "" "" "." 2', lines)
+
     def test_now_reflects_todays_date_not_pinned_to_date_start(self):
         """`now` debe reflejar la fecha real de la corrida (para que los
         `booking` protejan el pasado correctamente en cada reschedule),
@@ -69,6 +77,20 @@ class TestTjpProjectHeader(TransactionCase):
         self.assertIn('    scenario withia "Withia"', text)
         plan.unlink()
         self.project.scenario_ids.unlink()
+
+    def test_cost_account_declares_dummy_revenue_account(self):
+        """'revenue' nunca recibe chargeset — existe solo porque `balance`
+        (ver _tjp_reports) exige dos cuentas de nivel superior."""
+        lines = self.project._tjp_cost_account()
+        self.assertIn('account cost "Costo"', lines)
+        self.assertIn('account revenue "Ingresos"', lines)
+
+    def test_reports_declare_balance_against_dummy_revenue(self):
+        """Sin `balance`, la columna 'cost' del taskreport devuelve el string
+        literal "No 'balance' defined!" en vez de un número (confirmado
+        contra el binario real de tj3-ms)."""
+        lines = self.project._tjp_reports([])
+        self.assertIn('  balance cost revenue', lines)
 
 
 class TestTjpProjectEndDate(TransactionCase):
@@ -828,20 +850,60 @@ class TestTjpBookings(TransactionCase):
 
     def test_booking_emitted_for_past_timesheet(self):
         task = self._task(name='Con horas', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
-        self._log_time(task, '2026-06-30', 3.5)
+        self._log_time(task, '2026-06-30', 3.0)
         lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
-        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +3.50h', lines)
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +3.00h {{ overtime 2 }}', lines)
 
     def test_bookings_for_same_user_and_day_are_summed(self):
         task = self._task(name='Dos líneas mismo día', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
         self._log_time(task, '2026-06-30', 2.0)
         self._log_time(task, '2026-06-30', 1.5)
         lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
-        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +3.50h', lines)
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +3.00h {{ overtime 2 }}', lines)
         self.assertEqual(
             sum(1 for l in lines if l.strip().startswith('booking')), 1,
             'Dos timesheets del mismo usuario/día deben colapsar en un solo booking',
         )
+
+    def test_booking_hours_truncated_to_whole_hour(self):
+        """TJ3 rechaza bookings cuya duración no sea múltiplo del
+        timingresolution del proyecto (60 min, default de TJ3). Un timesheet
+        con minutos sueltos (ej. 0.14h) generaba `+0.14h` y TJ3 fallaba con
+        'interval duration must be a multiple of the specified timing
+        resolution'. Se trunca a la hora entera."""
+        task = self._task(name='Minutos sueltos', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 10.14)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +10.00h {{ overtime 2 }}', lines)
+
+    def test_booking_omitted_when_truncated_hours_are_zero(self):
+        task = self._task(name='Menos de una hora', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 0.14)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertFalse(any(l.strip().startswith('booking') for l in lines))
+
+    def test_booking_truncation_applies_to_summed_total_not_each_line(self):
+        """El truncamiento debe aplicarse sobre la suma agrupada por
+        (usuario, día), no línea por línea — si se truncara cada timesheet
+        individualmente, dos líneas de 0.6h (que suman 1.2h reales) perderían
+        toda la hora en vez de solo los 0.2h sobrantes."""
+        task = self._task(name='Dos líneas fraccionarias', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 0.6)
+        self._log_time(task, '2026-06-30', 0.6)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +1.00h {{ overtime 2 }}', lines)
+
+    def test_booking_allows_overtime_beyond_daily_calendar_capacity(self):
+        """Un timesheet puede superar la capacidad de calendario del
+        recurso ese día (horas extra). Sin `overtime`, TJ3 intenta
+        completar la duración derramándose al próximo día hábil con lugar
+        — si ese día cae en o después de `now` (fin de semana/feriado de
+        por medio), falla con 'has no duty'. `overtime 2` evita el
+        derrame dejando que la duración se cubra el mismo día."""
+        task = self._task(name='Horas extra', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
+        self._log_time(task, '2026-06-30', 12.0)
+        lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
+        self.assertIn(f'  booking u{self.user.id} 2026-06-30 +12.00h {{ overtime 2 }}', lines)
 
     def test_booking_excludes_lines_after_now_date(self):
         task = self._task(name='Horas futuras', allocated_hours=40.0, user_ids=[(6, 0, [self.user.id])])
@@ -877,7 +939,7 @@ class TestTjpBookings(TransactionCase):
 
         lines = self.project._tjp_task_block(task, now_date=date(2026, 7, 1))
         text = '\n'.join(lines)
-        self.assertIn(f'  booking u{helper_user.id} 2026-06-30 +3.00h', text)
+        self.assertIn(f'  booking u{helper_user.id} 2026-06-30 +3.00h {{ overtime 2 }}', text)
         # No se lo agrega como candidato de asignación futura de la tarea.
         self.assertNotIn(f'allocate u{helper_user.id}', text)
 
