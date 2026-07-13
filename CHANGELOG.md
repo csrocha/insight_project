@@ -9,6 +9,29 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.3] - 2026-07-13
+
+### Cambiado
+
+- `views/res_config_settings_views.xml`: la sección "TaskJuggler" de
+  Ajustes se cuelga ahora de `project.res_config_settings_view_form`
+  (`//app[@name='project']`) en vez de `base.res_config_settings_view_form`,
+  y usa los widgets nativos `<block>`/`<setting>` de la app de Ajustes en
+  vez del `div.o_setting_box` armado a mano. Efecto: la configuración de
+  TJ3 (`tj_microservice_url`, `tj_microservice_timeout` + botón "Probar
+  conexión") ahora aparece dentro de la sección de Proyecto en Ajustes,
+  con el mismo look & feel que el resto de las settings nativas de esa
+  app, en vez de un bloque genérico suelto al final de Ajustes.
+- Sin cambios de campos ni de lógica (`action_test_tj_connection` y los
+  dos campos de configuración quedan igual) — es puramente de
+  presentación/ubicación.
+
+### Validación
+
+- `make test-local MODULE=insight_project`: 193/193 tests, 0 fallos (sin
+  tests unitarios propios de vistas de Ajustes; validado por carga
+  limpia del módulo).
+
 ## [17.0.9.7.2] - 2026-07-13
 
 ### Prompt
