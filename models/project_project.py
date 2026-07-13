@@ -402,6 +402,15 @@ class ProjectProject(models.Model):
     # binario Low/High): 800 alcanza para que gane contención de recursos
     # frente a cualquier tarea que se quede en el default implícito.
     _TJP_HIGH_PRIORITY = 800
+    # Cuentas/reportes del desglose de costo (ver _generate_cost_report_tjp
+    # / _tj_cost_by_phase_and_skill) — separadas de _TJP_COST_ACCOUNT_ID
+    # (el schedule normal). Las hojas se nombran phase_<task.id>/
+    # skill_<skill.id> para poder mapear de vuelta al registro real al
+    # parsear la columna 'id' del accountreport.
+    _TJP_PHASE_ACCOUNT_ID = 'by_phase'
+    _TJP_SKILL_ACCOUNT_ID = 'by_skill'
+    _TJP_PHASE_REPORT_ID = 'cost_by_phase'
+    _TJP_SKILL_REPORT_ID = 'cost_by_skill'
 
     def _tjp_cost_account(self):
         """Cuenta de costo declarada una sola vez para que la columna 'cost' de
@@ -626,7 +635,7 @@ class ProjectProject(models.Model):
             ]
         return lines
 
-    def _tjp_task_block(self, task, depth=0, now_date=None):
+    def _tjp_task_block(self, task, depth=0, now_date=None, extra_chargeset_fn=None):
         if now_date is None:
             now_date = self._tjp_now_date()
         t_id = self._tjp_task_id(task)
@@ -648,6 +657,14 @@ class ProjectProject(models.Model):
             # chargeset se hereda a las subtareas; alcanza con declararlo una
             # sola vez en la tarea raíz para que 'cost' se acumule correctamente.
             lines.append(f'{ind}  chargeset {self._TJP_COST_ACCOUNT_ID}')
+        # Hook para los reportes de costo por fase/skill (ver
+        # _generate_cost_report_tjp): una tarea puede tener cualquier
+        # cantidad de `chargeset`, uno por cada cuenta de nivel superior
+        # distinta (confirmado contra el binario real) — no interfiere con
+        # el chargeset de 'cost' de arriba.
+        if extra_chargeset_fn:
+            for cl in extra_chargeset_fn(task, depth):
+                lines.append(f'{ind}  {cl}')
 
         child_tasks = task.child_ids.filtered(
             lambda t: t.project_id == self
@@ -717,7 +734,10 @@ class ProjectProject(models.Model):
 
         # Subtasks (recursive)
         for child in child_tasks:
-            lines += self._tjp_task_block(child, depth=depth + 1, now_date=now_date)
+            lines += self._tjp_task_block(
+                child, depth=depth + 1, now_date=now_date,
+                extra_chargeset_fn=extra_chargeset_fn,
+            )
 
         lines.append(f'{ind}}}')
         lines.append('')
@@ -890,6 +910,289 @@ class ProjectProject(models.Model):
                 '',
             ]
         return lines
+
+    # ── Reportes de costo (fase / skill / departamento) ─────────────────────────
+    #
+    # Fase y skill se conocen antes de programar (atributos fijos de la
+    # tarea) → cuentas TJ3 reales (`account`/`chargeset`/`accountreport`),
+    # corridas en un .tjp aparte, acotado a un solo escenario, que NO
+    # escribe en insight.task.schedule. Departamento depende de quién
+    # termina realmente asignado (recién se sabe al volver el schedule) →
+    # se calcula 100% en Python sobre datos ya importados (ver
+    # _cost_by_department). Guardado como versiones de knowledge.asset
+    # (ver _get_or_create_cost_asset/_compute_and_save_cost_reports) para
+    # tener histórico navegable, no solo el último cálculo.
+
+    def _tjp_phase_skill_account_lines(self, root_tasks, skills):
+        """Declara las cuentas de nivel superior 'by_phase'/'by_skill', una
+        hoja por cada tarea raíz / skill distinta. Se omite la cuenta
+        entera si no hay nada que declarar (ej. proyecto sin ninguna
+        required_skill_ids en sus tareas)."""
+        lines = []
+        if root_tasks:
+            lines.append(f'account {self._TJP_PHASE_ACCOUNT_ID} "Por fase" {{')
+            for task in root_tasks:
+                name = (task.name or 'Fase').replace('"', "'")
+                lines.append(f'  account phase_{task.id} "{name}"')
+            lines += ['}', '']
+        if skills:
+            lines.append(f'account {self._TJP_SKILL_ACCOUNT_ID} "Por categoría" {{')
+            for skill in skills:
+                name = (skill.name or 'Skill').replace('"', "'")
+                lines.append(f'  account skill_{skill.id} "{name}"')
+            lines += ['}', '']
+        return lines
+
+    def _tjp_extra_chargeset_fn(self, leaf_task_ids):
+        """Callable para _tjp_task_block (parámetro extra_chargeset_fn):
+        cada tarea raíz suma su costo a su cuenta de fase (heredado a las
+        subtareas, igual que `cost`); cada tarea hoja con
+        required_skill_ids suma el suyo a sus cuentas de skill, repartido
+        en partes iguales entre ellas si requiere más de una (confirmado
+        contra el binario real: `chargeset a, b` sin porcentaje explícito
+        reparte parejo — no hace falta calcular el % a mano)."""
+        def fn(task, depth):
+            lines = []
+            if depth == 0:
+                lines.append(f'chargeset phase_{task.id}')
+            if task.id in leaf_task_ids and task.required_skill_ids:
+                skill_accounts = ", ".join(f'skill_{sid}' for sid in task.required_skill_ids.ids)
+                lines.append(f'chargeset {skill_accounts}')
+            return lines
+        return fn
+
+    def _tjp_accountreports(self, has_phase, has_skill):
+        """accountreport en modo normal (sin `balance` — eso solo hace
+        falta para taskreport, ver _tjp_reports). Las columnas de período
+        ('monthly') son la única forma de sacar un valor de cuenta en TJ3
+        3.8.4 (no existe una columna de 'total' plano) — vienen ACUMULADAS
+        a la fecha (confirmado contra el binario real), así que
+        _parse_accountreport_csv se queda con la última, nunca las suma."""
+        lines = []
+        if has_phase:
+            lines += [
+                f'accountreport "{self._TJP_PHASE_REPORT_ID}" {{',
+                '  formats csv',
+                f'  accountroot {self._TJP_PHASE_ACCOUNT_ID}',
+                '  columns id, bsi, name, monthly',
+                '}',
+                '',
+            ]
+        if has_skill:
+            lines += [
+                f'accountreport "{self._TJP_SKILL_REPORT_ID}" {{',
+                '  formats csv',
+                f'  accountroot {self._TJP_SKILL_ACCOUNT_ID}',
+                '  columns id, bsi, name, monthly',
+                '}',
+                '',
+            ]
+        return lines
+
+    def _generate_cost_report_tjp(self, scenario):
+        """.tjp aparte del schedule normal (_generate_tjp): acotado a UN
+        escenario, sin taskreport de schedule ni milestones — solo lo
+        necesario para los accountreport de fase/skill. No se importa a
+        insight.task.schedule; ese modelo sigue siendo dueño solo del
+        schedule real."""
+        self.ensure_one()
+        now_date = self._tjp_now_date()
+        root_tasks = self.task_ids.filtered(lambda t: not t.parent_id).sorted('sequence')
+        skills = self.task_ids.mapped('required_skill_ids')
+        leaf_task_ids = self._tjp_leaf_task_ids()
+        extra_fn = self._tjp_extra_chargeset_fn(leaf_task_ids)
+
+        lines = []
+        lines += self._tjp_project_header(scenario, now_date)
+        lines += self._tjp_cost_account()
+        lines += self._tjp_phase_skill_account_lines(root_tasks, skills)
+        lines += self._tjp_shift_declarations(now_date)
+        for user in self._tj_project_users():
+            lines += self._tjp_resource_block(user)
+        lines += self._tjp_scenario_supplement(scenario)
+        for task in root_tasks:
+            lines += self._tjp_task_block(task, depth=0, now_date=now_date, extra_chargeset_fn=extra_fn)
+        lines += self._tjp_accountreports(bool(root_tasks), bool(skills))
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _parse_accountreport_csv(csv_content):
+        """Parsea un accountreport CSV ('id', 'bsi', 'name', <períodos...>)
+        a {account_id: costo_final}. Las columnas de período (ej.
+        '2026-07-01') vienen acumuladas a la fecha — el costo real de la
+        cuenta es el de la ÚLTIMA en orden cronológico, sumarlas
+        duplicaría costo."""
+        if not csv_content:
+            return {}
+        first_line = csv_content.split('\n')[0] if csv_content else ''
+        delimiter = ';' if ';' in first_line else ','
+        reader = csv.DictReader(io.StringIO(csv_content), delimiter=delimiter)
+        period_re = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+        result = {}
+        for row in reader:
+            norm = {k.strip().lower(): (v or '').strip() for k, v in row.items() if k is not None}
+            account_id = norm.get('id', '')
+            if not account_id:
+                continue
+            period_cols = sorted(k for k in norm if period_re.match(k))
+            if not period_cols:
+                continue
+            try:
+                result[account_id] = float(norm[period_cols[-1]].replace(',', ''))
+            except (ValueError, AttributeError):
+                result[account_id] = 0.0
+        return result
+
+    def _tj_cost_by_phase_and_skill(self, scenario):
+        """Corre el .tjp de _generate_cost_report_tjp contra el
+        microservicio TJ3 y devuelve ({project.task raíz: costo},
+        {hr.skill: costo}). No escribe en insight.task.schedule."""
+        self.ensure_one()
+        if self.schedule_dirty:
+            raise UserError(_(
+                'El schedule está desactualizado. Ejecute "Ejecutar '
+                'Schedule" antes de generar reportes de costos.'
+            ))
+        root_tasks = self.task_ids.filtered(lambda t: not t.parent_id).sorted('sequence')
+        skills = self.task_ids.mapped('required_skill_ids')
+        if not root_tasks:
+            return {}, {}
+
+        ICP = self.env['ir.config_parameter'].sudo()
+        url = ICP.get_param('insight_project.tj_microservice_url')
+        if not url:
+            raise UserError(_('Configure la URL del microservicio TJ3 en Ajustes → TaskJuggler.'))
+        try:
+            timeout = int(ICP.get_param('insight_project.tj_microservice_timeout') or 120)
+        except (ValueError, TypeError):
+            timeout = 120
+
+        tjp_content = self._generate_cost_report_tjp(scenario)
+        response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
+        csv_files = response_data.get('csv_files', {})
+
+        phase_costs = {}
+        parsed = self._parse_accountreport_csv(csv_files.get(f'{self._TJP_PHASE_REPORT_ID}.csv', ''))
+        for task in root_tasks:
+            cost = parsed.get(f'phase_{task.id}')
+            if cost is not None:
+                phase_costs[task] = cost
+
+        skill_costs = {}
+        parsed = self._parse_accountreport_csv(csv_files.get(f'{self._TJP_SKILL_REPORT_ID}.csv', ''))
+        for skill in skills:
+            cost = parsed.get(f'skill_{skill.id}')
+            if cost is not None:
+                skill_costs[skill] = cost
+
+        return phase_costs, skill_costs
+
+    def _cost_by_department(self, scenario):
+        """Costo por departamento, 100% en Python: a diferencia de fase/
+        skill, depende de quién termina REALMENTE asignado — algo que TJ3
+        recién resuelve al devolver el schedule, no se puede declarar como
+        chargeset estático en el .tjp de entrada. Reparte el costo de una
+        tarea hoja en partes iguales entre los departamentos distintos de
+        sus recursos asignados (resource_ids, ya resuelto e importado)."""
+        self.ensure_one()
+        leaf_ids = self._tjp_leaf_task_ids()
+        no_department = _('Sin departamento')
+        totals = defaultdict(float)
+        for sched in scenario.schedule_ids.filtered(lambda s: s.task_id.id in leaf_ids):
+            departments = set()
+            for user in sched.resource_ids:
+                employee = self.env['hr.employee'].sudo().search([('user_id', '=', user.id)], limit=1)
+                departments.add(employee.department_id.name if employee and employee.department_id else False)
+            if not departments:
+                departments = {False}
+            share = sched.cost / len(departments)
+            for dept_name in departments:
+                totals[dept_name or no_department] += share
+        return dict(totals)
+
+    _TJP_COST_REPORT_CATEGORY = 'insight_project.cost_report'
+
+    def _get_or_create_cost_asset(self, scenario, dimension, label):
+        """Un knowledge.asset por (escenario, dimensión) — cada
+        "Generar reportes de costos" agrega una VERSIÓN nueva al mismo
+        asset (ver _compute_and_save_cost_reports), así el histórico sale
+        gratis vía asset.version_ids. `visibility='shared'` +
+        `shared_group_ids` (managers de proyecto) para que lo vea todo el
+        equipo de PM, no solo quien lo generó (el owner por default)."""
+        self.ensure_one()
+        Asset = self.env['knowledge.asset']
+        asset = Asset.search([
+            ('res_model', '=', 'insight.scenario'),
+            ('res_id', '=', scenario.id),
+            ('category', '=', self._TJP_COST_REPORT_CATEGORY),
+            ('tags', '=', dimension),
+        ], limit=1)
+        if asset:
+            return asset
+        manager_group = self.env.ref('project.group_project_manager', raise_if_not_found=False)
+        return Asset.create({
+            'name': _('%(label)s — %(project)s / %(scenario)s') % {
+                'label': label, 'project': self.name, 'scenario': scenario.name,
+            },
+            'res_model': 'insight.scenario',
+            'res_id': scenario.id,
+            'category': self._TJP_COST_REPORT_CATEGORY,
+            'tags': dimension,
+            'visibility': 'shared',
+            'shared_group_ids': [(6, 0, manager_group.ids)] if manager_group else False,
+        })
+
+    def _compute_and_save_cost_reports(self, scenario):
+        """Orquestador de 'Generar reportes de costos': calcula las 3
+        dimensiones y guarda cada una como una versión nueva de su
+        knowledge.asset (get-or-create)."""
+        self.ensure_one()
+        phase_costs, skill_costs = self._tj_cost_by_phase_and_skill(scenario)
+        dept_costs = self._cost_by_department(scenario)
+        currency = (self.company_id.currency_id.name if self.company_id else False) or 'USD'
+        generated_at = fields.Datetime.to_string(fields.Datetime.now())
+
+        dimensions = [
+            ('phase', _('Costo por fase'),
+             [{'label': task.name, 'cost': cost} for task, cost in phase_costs.items()]),
+            ('skill', _('Costo por categoría'),
+             [{'label': skill.name, 'cost': cost} for skill, cost in skill_costs.items()]),
+            ('department', _('Costo por departamento'),
+             [{'label': label, 'cost': cost} for label, cost in dept_costs.items()]),
+        ]
+        for dimension, label, items in dimensions:
+            asset = self._get_or_create_cost_asset(scenario, dimension, label)
+            payload = {
+                'title': label,
+                'currency': currency,
+                'generated_at': generated_at,
+                'items': items,
+                'total': sum(item['cost'] for item in items),
+            }
+            asset.create_version(
+                payload, schema=f'insight_project.cost_by_{dimension}', schema_version='1.0',
+            )
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _('Reportes de costos generados'),
+                'type': 'success',
+                'sticky': False,
+            },
+        }
+
+    def action_generate_cost_reports(self):
+        """Wrapper de conveniencia sobre el proyecto: resuelve el
+        escenario baseline y delega en insight.scenario (que es el dueño
+        real de la acción, ver models/insight_scenario.py) — así el botón
+        de un escenario puntual y el de la pestaña TaskJuggler del
+        proyecto hacen exactamente lo mismo."""
+        self.ensure_one()
+        scenario = self.scenario_ids.filtered('is_baseline')[:1]
+        if not scenario:
+            raise UserError(_('No hay un escenario baseline. Ejecute el schedule primero.'))
+        return scenario.action_generate_cost_reports()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

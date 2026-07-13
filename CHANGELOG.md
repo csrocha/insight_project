@@ -9,6 +9,138 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.0] - 2026-07-13
+
+### Prompt
+
+> "Dame detalle de cuenta de única. Quiero intercambiar ideas antes de
+> implementar." → tras discutir el diseño: "Me gustan esos reportes de
+> costos, pero todavia no me lo imagino en la interface de Odoo [...]
+> Creo que la mejor opción es que cada reporte termine en un JSON [...]
+> Que existan tipos de reportes [...] tendríamos al menos tres botones
+> tipo radio: Por eje/fase, Por categoría/skill, Por Departamento [...]
+> Al activarlo guarda esos tres reportes. Te parece viable?" → al
+> descubrirse que el usuario ya construía, en otra sesión en paralelo,
+> un addon genérico `knowledge_asset` para exactamente este tipo de
+> almacenamiento: "Pausar costos, foco 100% en Knowledge Assets ahora"
+> → luego, al confirmar que ya estaba shippeado: "insight_project pasa
+> a ser consumidor, no motor de reportes propio."
+
+### Discusión de diseño
+
+- Item #9 del backlog TJ3 ("cuenta de costo única") arrancó chico pero
+  escaló a reportes de costo **históricos**, con 3 desgloses (fase,
+  categoría/skill, departamento), navegables desde Odoo — se fusionó
+  con el item #10 (reportes nativos) del mismo backlog.
+- **Fase y categoría/skill** son atributos fijos de la tarea, conocidos
+  *antes* de programar → se resuelven con **cuentas TJ3 reales**
+  (`account`/`chargeset` anidados + un `accountreport` nuevo por
+  dimensión), no en Python. **Departamento** depende de qué recurso
+  termina asignado (solo se sabe *después* del schedule) → se calcula
+  100% en Python sobre `insight.task.schedule` ya importado, sin volver
+  a invocar TJ3 para esa dimensión.
+- Sintaxis TJ3 validada empíricamente contra `tj3-ms` real antes de
+  escribir el export (mismo método que toda la sesión, ver
+  `feedback_tj3_empirical_testing` en memoria): cuentas anidadas se
+  declaran con bloque (`account by_phase "Por fase" { account phase_5
+  "..." }`), no con paths punteados (`by_phase.phase_5` es rechazado
+  tanto al declarar como al referenciar en `chargeset`/`accountroot`);
+  cada tarea puede tener múltiples `chargeset` simultáneos apuntando a
+  cuentas top-level distintas sin pisarse; las columnas de período de
+  un `accountreport` son **acumulativas a la fecha**, no incrementales
+  — sumar todas las columnas duplicaría/triplicaría el costo real, hay
+  que tomar solo la última.
+- Multi-departamento en una tarea hoja (ej. un puesto por skill de un
+  departamento y el usuario asignado de otro): el costo de esa tarea se
+  reparte en **partes iguales** entre los departamentos representados,
+  para que la suma de todos los departamentos siga dando el costo total
+  real sin doble conteo.
+- Disparo **explícito** (botón "Generar reportes de costos"), nunca
+  automático en cada reschedule — el histórico debe quedar con
+  checkpoints significativos, no una fila por cada ajuste menor.
+  Bloqueado con `UserError` si `schedule_dirty` o si no hay escenario
+  baseline.
+- Almacenamiento vía `knowledge_asset` (addon nuevo, ya shippeado en
+  paralelo por otra sesión, v17.0.1.0.0): un `knowledge.asset` por
+  combinación (escenario, dimensión) — 3 en total por escenario, con
+  `res_model='insight.scenario'`. Cada click en "Generar" hace
+  get-or-create de esos 3 assets y les agrega una **versión nueva**
+  (`create_version`) — el histórico sale gratis vía
+  `asset.version_ids`, sin modelo propio en `insight_project`.
+  Visibilidad `shared` + `shared_group_ids` incluyendo
+  `project.group_project_manager`, para que todo el equipo de PM vea
+  los reportes, no solo quien apretó el botón.
+- Rendering vía un controller liviano propio
+  (`/insight_project/cost_report/<id>`, mismo patrón que el SVG de
+  Gantt existente) — `knowledge_asset` deliberadamente no rendariza
+  nada, eso queda a cargo de cada consumidor.
+- Descubierto **al pasar** (no buscado): `insight.task.schedule.cost`
+  venía siendo 0 o gravemente incorrecto en todo reschedule real, por
+  falta de `balance`/`currencyformat` en el `.tjp` — ver detalle en el
+  fix de más abajo. Corregido en el mismo alcance porque el nuevo
+  `taskreport` de costos dependía de que `cost` funcionara realmente.
+- Limitación conocida, documentada y no parcheada (pertenece a
+  `knowledge_asset`, de otra sesión): su regla `shared` solo otorga
+  `perm_read=1` a usuarios no-owner en `shared_group_ids` — un segundo
+  project manager que no generó el reporte puede **verlo** pero no
+  volver a generarlo (`create_version`) sobre los mismos 3 assets; solo
+  el owner original o miembros de `group_knowledge_asset_manager`
+  pueden hacerlo. Si esto resulta molesto en el uso real, requiere un
+  cambio en `knowledge_asset`, no en `insight_project`.
+
+### Agregado
+
+- `project.project._generate_cost_report_tjp(scenario)`: genera un
+  `.tjp` acotado a un solo escenario, con cuentas anidadas `by_phase`/
+  `by_skill` y sus `chargeset` correspondientes, y dos `accountreport`
+  (`cost_by_phase`, `cost_by_skill`) en formato CSV.
+- `project.project._tj_cost_by_phase_and_skill(scenario)`: invoca el
+  microservicio TJ3 con el `.tjp` de arriba y parsea ambos CSV
+  (`_parse_accountreport_csv`, tomando solo la última columna de
+  período).
+- `project.project._cost_by_department(scenario)`: cálculo 100% Python
+  sobre `insight.task.schedule`, con reparto parejo entre departamentos
+  múltiples de una misma tarea.
+- `project.project._compute_and_save_cost_reports(scenario)` /
+  `insight.scenario.action_generate_cost_reports()`: orquestan el
+  cálculo de las 3 dimensiones y las versionan como `knowledge.asset`.
+- Botón "Generar reportes de costos" y botón inteligente "Reportes" en
+  `insight.scenario` (form) y en la pestaña TaskJuggler de
+  `project.project`.
+- Controller `/insight_project/cost_report/<int:asset_id>` (`auth=
+  'user'`): renderiza el payload JSON de cada reporte como un gráfico
+  de barras SVG inline, respetando el `ir.rule` propio de
+  `knowledge.asset` (sin `sudo()`).
+- `depends`: se agrega `knowledge_asset`.
+
+### Corregido
+
+- **`insight.task.schedule.cost` venía siendo 0 o incorrecto en todo
+  reschedule real**: el `taskreport` nunca declaraba `balance`, así que
+  la columna `cost` devolvía el string literal `"No 'balance' defined!"`
+  (parseado como `0.0`); y sin `currencyformat`, un locale con coma
+  decimal hacía que `_parse_tj_cost` confundiera separador de miles con
+  decimal (error de 100x). Se agregó una cuenta `revenue` dummy (nunca
+  imputada) + `balance cost revenue` en ambos `taskreport`, y
+  `currencyformat "-" "" "" "." 2` en el header del proyecto. Validado
+  end-to-end contra `tj3-ms` real: 5 días × $800/día → `4000.0`
+  correctamente (antes: `"No 'balance' defined!"` → `0.0`, o con coma de
+  locale → `30000.0`).
+
+### Validación
+
+- `make test-local MODULE=insight_project`: 188/188 tests, 0 fallos.
+- End-to-end manual contra `tj3-ms` real (proyecto con 2 fases, 2
+  skills, 2 departamentos, 2 usuarios): `.tjp` generado, corrido contra
+  el binario real, CSV de `cost_by_phase`/`cost_by_skill` con totales
+  correctos (5 días × $1000/día = $5000 por tarea, sin doble conteo).
+  Pipeline completo (`action_generate_cost_reports` →
+  `knowledge.asset`) validado en shell: 3 assets creados con payloads
+  correctos; una segunda generación versiona los mismos 3 assets (no
+  duplica); un usuario `project.group_project_manager` distinto del que
+  generó el reporte puede leerlo (`shared_group_ids` funciona); el
+  guard de `schedule_dirty` bloquea la generación con `UserError`.
+
 ## [17.0.9.6.12] - 2026-07-13
 
 ### Prompt

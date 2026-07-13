@@ -4,3 +4,4 @@ from . import test_tjp_schedule_import
 from . import test_scheduler
 from . import test_gantt
 from . import test_scenario_selection
+from . import test_cost_reports

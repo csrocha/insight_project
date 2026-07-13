@@ -24,6 +24,16 @@
         <field name="arch" type="xml">
             <form>
                 <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_cost_reports" type="object"
+                                class="oe_stat_button" icon="fa-bar-chart">
+                            <field name="cost_report_count" widget="statinfo" string="Reportes"/>
+                        </button>
+                    </div>
+                    <div class="mb16">
+                        <button name="action_generate_cost_reports" type="object"
+                                string="Generar reportes de costos" class="btn-secondary"/>
+                    </div>
                     <group>
                         <field name="name"/>
                         <field name="project_id"/>

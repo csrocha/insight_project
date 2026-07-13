@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from collections import defaultdict
 
-from odoo import api, models, fields
+from odoo import _, api, models, fields
 
 
 class InsightScenario(models.Model):
@@ -119,6 +119,41 @@ class InsightScenario(models.Model):
             extra = sum(amount for _, amount in scenario._cost_budget_contributions())
             scenario.extra_cost = extra
             scenario.grand_total_cost = scenario.total_cost + extra
+
+    # ── Reportes de costo (ver project.project._compute_and_save_cost_reports) ──
+
+    cost_report_count = fields.Integer(
+        compute='_compute_cost_report_count', string='Reportes de costos',
+    )
+
+    def _compute_cost_report_count(self):
+        Asset = self.env['knowledge.asset']
+        for scenario in self:
+            scenario.cost_report_count = Asset.search_count([
+                ('res_model', '=', 'insight.scenario'),
+                ('res_id', '=', scenario.id),
+                ('category', '=', 'insight_project.cost_report'),
+            ])
+
+    def action_view_cost_reports(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Reportes de costos'),
+            'res_model': 'knowledge.asset',
+            'view_mode': 'list,form',
+            'domain': [
+                ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.id),
+                ('category', '=', 'insight_project.cost_report'),
+            ],
+        }
+
+    def action_generate_cost_reports(self):
+        """El botón real vive acá (por escenario); project.project solo
+        expone un wrapper de conveniencia que resuelve el baseline (ver
+        project.project.action_generate_cost_reports)."""
+        self.ensure_one()
+        return self.project_id._compute_and_save_cost_reports(self)
 
 
 class InsightScenarioEfficiency(models.Model):

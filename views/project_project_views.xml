@@ -33,8 +33,11 @@
                                 string="Exportar TJP" class="btn-secondary me-2"
                                 invisible="not is_tj_enabled"/>
                         <button name="action_open_import_wizard" type="object"
-                                string="Importar TJP..." class="btn-secondary"
+                                string="Importar TJP..." class="btn-secondary me-2"
                                 invisible="is_tj_enabled"/>
+                        <button name="action_generate_cost_reports" type="object"
+                                string="Generar reportes de costos" class="btn-secondary"
+                                invisible="not last_scheduled"/>
                     </div>
                     <separator string="Escenarios" invisible="not is_tj_enabled"/>
                     <field name="scenario_ids" invisible="not is_tj_enabled"
