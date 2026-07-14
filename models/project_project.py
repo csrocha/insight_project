@@ -784,11 +784,11 @@ class ProjectProject(models.Model):
                     ) % {'task': task.name, 'dep1': ff_dep.name, 'dep2': dep.name})
                 ff_dep = dep
                 continue
-            dep_path = self._tjp_task_abs_path(dep)
+            dep_path = self._tjp_task_abs_path(dep, owner=task)
             suffix = ' { onstart }' if dep_type == 'SS' else ''
             lines.append(f'{ind}  depends {dep_path}{suffix}')
         if ff_dep is not None:
-            ff_path = self._tjp_task_abs_path(ff_dep)
+            ff_path = self._tjp_task_abs_path(ff_dep, owner=task)
             lines.append(f'{ind}  precedes {ff_path} {{ onend }}')
 
         # Subtasks (recursive)
@@ -1150,15 +1150,39 @@ class ProjectProject(models.Model):
         return f'm{milestone.id}'
 
     @staticmethod
-    def _tjp_task_abs_path(task):
-        """Absolute TJ3 path for a task: !t1.t5.t42 (from project scope)."""
+    def _tjp_task_abs_path(dep, owner=None):
+        """Referencia a `dep` tal como la resuelve TJ3 en un `depends`/
+        `precedes` declarado por `owner`. Bug real encontrado y confirmado
+        empíricamente contra el binario real (tj3-ms v3.8.4): TJ3 no
+        resuelve cada '!' contra la raíz del proyecto, sino contra `owner`
+        (la tarea que declara la dependencia) — ver TjpSyntaxRules.rb,
+        rule_taskDepId/rule_relativeId. Antes este método siempre emitía UN
+        solo '!' seguido del path completo desde la raíz, lo cual solo es
+        correcto cuando `owner` es de nivel raíz (profundidad 0, el único
+        caso hoy testeado) — para cualquier `owner` anidado dependiendo de
+        una hermana, TJ3 rechazaba el archivo
+        ("Error: Task a.c has unknown depends a.a.b", reproducido contra el
+        binario real). El fix: subir tantos '!' como la profundidad de
+        `owner` + 1 — eso siempre saca el scope fuera de todo ancestro, así
+        el resto del id es directamente el path completo de `dep` desde la
+        raíz (confirmado también empíricamente: `depends !b` con owner a
+        profundidad 1 agenda correctamente). `owner=None` (milestones, que
+        siempre son de nivel raíz) preserva el comportamiento de siempre:
+        profundidad 0 → un solo '!'."""
+        depth = 0
+        if owner:
+            t = owner
+            project_id = owner.project_id.id
+            while t.parent_id and t.parent_id.project_id.id == project_id:
+                depth += 1
+                t = t.parent_id
         parts = []
-        t = task
-        project_id = task.project_id.id
+        t = dep
+        project_id = dep.project_id.id
         while t and t.project_id.id == project_id:
             parts.append(f't{t.id}')
             t = t.parent_id
-        return '!' + '.'.join(reversed(parts))
+        return '!' * (depth + 1) + '.'.join(reversed(parts))
 
     @staticmethod
     def _tjp_scenario_id(scenario):

@@ -9,6 +9,74 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.6] - 2026-07-14
+
+### Prompt
+
+> Continuación del ítem 2 de `BACKLOG.md` ("Gaps del wizard de import de
+> `.tjp` externos"): `depends`/`note` se perdían al importar un `.tjp`
+> externo y los milestones importados quedaban con `task_ids` vacío,
+> rompiendo el roundtrip export→TJ3→import. (Trabajo de una sesión
+> previa a esta; no se dispone del prompt textual original — ver memoria
+> `project_insight_tjp_import_gaps`.)
+
+### Discusión de diseño
+
+- Causa raíz de los tres gaps: `insight_import_wizard.py` construía la
+  jerarquía de tareas parseando el **CSV que devuelve TJ3** (vía
+  `_parse_csv_preview`, con un heurístico de regex aparte para detectar
+  milestones), y ese CSV nunca tuvo columna de dependencias ni de notas
+  — no era un problema de parsing sino de estar leyendo la fuente
+  equivocada. Fix: `models/tjp_parser.py`, un parser real (tokenizer +
+  descenso recursivo consciente de llaves/strings, no regex) que lee
+  directamente el `.tjp` fuente y expone jerarquía, `depends`/`precedes`
+  (con modificador `onstart`/`onend`), `allocate` (recurso primario +
+  alternativas) y `note` por tarea. El CSV se sigue usando, pero solo
+  para completar fechas/criticidad vía `_import_scenario_csv` — ya no
+  para crear tareas.
+- `_serialize_tree` aplana el árbol de `tjp_parser` en pre-orden (padre
+  antes que hijos) y resuelve `depends`/`precedes` a su `full_id`
+  destino ahí mismo, contra el árbol completo — así `action_import` solo
+  necesita buscar ese `full_id` en el mapa de registros ya creados
+  (`record_by_full_id`), sin reimplementar la resolución de rutas `!`.
+- **Bug real de export encontrado y corregido de paso, confirmado contra
+  el binario real (tj3-ms v3.8.4)**: `_tjp_task_abs_path` siempre emitía
+  un solo `!` sin importar la profundidad de la tarea que declara el
+  `depends`/`precedes`. TJ3 resuelve cada `!` subiendo un nivel *desde la
+  tarea que declara la dependencia* (no desde la raíz del proyecto) —
+  para cualquier tarea anidada dependiendo de una hermana, esto hacía
+  que TJ3 rechazara el archivo (`Error: Task a.c has unknown depends
+  a.a.b`, reproducido contra el binario real). Fix: `owner` (la tarea
+  que declara la dependencia) determina cuántos `!` hacen falta
+  (profundidad + 1); antes solo funcionaba por accidente cuando `owner`
+  era de nivel raíz, el único caso testeado hasta ahora.
+- Se agregó **reimportar**: `action_import` ahora borra las
+  `project.task`/`project.milestone` existentes del proyecto antes de
+  recrear desde el `.tjp` (no mergea contra un import anterior, para no
+  duplicar si la estructura cambió entre corridas). Gateado a que el
+  proyecto esté en `state == 'draft'` (`project_improve`,
+  `_check_draft_state`) — en evaluación/progreso/finalizado se bloquea,
+  para no arriesgar borrar timesheets o schedule ya comprometido.
+- `note` ahora llena `project.task.description`; tareas importadas ya
+  100% completas (`complete == 100` en el `.tjp`) se crean directamente
+  con `state = '1_done'` — sin esto quedaban en "en progreso" (o
+  "esperando" si algo dependía de ellas) pese a que su `stage_id` ya
+  mostrara "Completada", porque `project.task._compute_state` no deriva
+  de la etapa, solo alterna según dependencias abiertas y respeta un
+  valor ya cerrado sin pisarlo.
+- `BACKLOG.md` ítem 2 actualizado a resuelto.
+
+### Tests
+
+`tests/test_tjp_parser.py` (nuevo, tokenizer + parser: jerarquía,
+`depends`/`precedes` con modificadores, `allocate` con alternativas,
+milestones, notas con llaves adentro, comentarios). `test_import_wizard.py`
+reescrito contra el nuevo pipeline basado en `tjp_parser`. Suite completa
+de `insight_project` verificada en verde (236 tests) vía
+`make test-local MODULE=insight_project`.
+
+---
+
 ## [17.0.9.7.5] - 2026-07-14
 
 ### Prompt

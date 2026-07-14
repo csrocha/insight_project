@@ -609,6 +609,27 @@ class TestTjpTaskBlock(TransactionCase):
         lines = self.project._tjp_task_block(dependent)
         self.assertIn(f'  depends !t{blocker.id} {{ onstart }}', lines)
 
+    def test_dependency_from_nested_task_uses_extra_bang_per_ancestor(self):
+        """Bug real, confirmado empíricamente contra el binario real de TJ3
+        (v3.8.4): antes de este fix, _tjp_task_abs_path siempre emitía UN
+        solo '!' sin importar la profundidad de la tarea que declara el
+        `depends` — TJ3 rechaza eso para cualquier tarea anidada
+        dependiendo de una hermana bajo el mismo padre ("Error: Task a.c
+        has unknown depends a.a.b", reproducido contra tj3-ms). TJ3
+        resuelve cada '!' subiendo un nivel desde la tarea que declara la
+        dependencia (no desde la raíz del proyecto) — acá 'dependent' está
+        a profundidad 1 bajo 'parent', así que hacen falta 2 '!' (no 1)
+        para que el resto del path ('t{parent}.t{blocker}') se interprete
+        como global."""
+        parent = self._task(name='Parent')
+        blocker = self._task(name='Bloqueante', parent_id=parent.id)
+        dependent = self._task(
+            name='Dependiente', parent_id=parent.id,
+            depend_on_ids=[(6, 0, [blocker.id])],
+        )
+        text = '\n'.join(self.project._tjp_task_block(parent))
+        self.assertIn(f'depends !!t{parent.id}.t{blocker.id}', text)
+
     def test_dependency_multiple_blockers_share_task_type(self):
         """tj_dependency_type es el default de la tarea: sin overrides por
         arista (dependency_type_ids), se aplica igual a todos sus

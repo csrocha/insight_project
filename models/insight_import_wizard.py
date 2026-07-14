@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import base64
-import csv
 import io
 import json
 import os
@@ -11,6 +10,8 @@ import pytz
 
 from odoo import api, fields, models, _
 from odoo.exceptions import UserError
+
+from . import tjp_parser
 
 
 class InsightImportWizard(models.TransientModel):
@@ -71,6 +72,24 @@ class InsightImportWizard(models.TransientModel):
             else:
                 rec.scenario_names = ''
 
+    def _check_draft_state(self):
+        """Importar (y reimportar) reemplaza todas las tareas/milestones
+        existentes del proyecto — solo tiene sentido, y solo es seguro,
+        mientras el proyecto está en 'draft' (project_improve): ahí todavía
+        se está presupuestando, sin timesheets ni schedule comprometido de
+        por medio. En 'evaluación'/'progreso'/'finalizado' se bloquea para
+        no arriesgar borrar trabajo real."""
+        self.ensure_one()
+        if self.project_id.state != 'draft':
+            raise UserError(_(
+                'Solo se puede importar (o reimportar) un .tjp cuando el '
+                'proyecto está en estado "Borrador". "%(project)s" está en '
+                '"%(state)s".'
+            ) % {
+                'project': self.project_id.name,
+                'state': dict(self.project_id._fields['state'].selection)[self.project_id.state],
+            })
+
     # -------------------------------------------------------------------------
     # Step 1: Upload & Analyze
     # -------------------------------------------------------------------------
@@ -79,6 +98,7 @@ class InsightImportWizard(models.TransientModel):
         self.ensure_one()
         if not self.tjp_file:
             raise UserError(_('Seleccione un archivo TJP antes de continuar.'))
+        self._check_draft_state()
 
         ICP = self.env['ir.config_parameter'].sudo()
         url = ICP.get_param('insight_project.tj_microservice_url')
@@ -151,15 +171,19 @@ class InsightImportWizard(models.TransientModel):
         if not csv_files:
             csv_files = all_csvs  # fallback: use all if naming didn't match
 
-        # Best-effort detection of which TJ ids carry a bare `milestone`
-        # attribute in the source .tjp, so the resulting Odoo task can be
-        # linked to a project.milestone on import instead of silently
-        # losing that information (see _find_milestone_task_ids).
-        milestone_tj_ids = self._find_milestone_task_ids(all_content)
+        # Parsear el .tjp fuente con el parser real (tjp_parser) — a
+        # diferencia del CSV que devuelve TJ3 (que no tiene columna de
+        # dependencias ni de notas), acá se recupera la jerarquía real,
+        # `depends`/`precedes`, `allocate` (pool de recursos) y `note` de
+        # cada tarea. El CSV se sigue usando más abajo, pero solo para
+        # completar fechas/criticidad vía _import_scenario_csv — ya no
+        # para crear las tareas (ver action_import).
+        roots = tjp_parser.parse_tasks(all_content)
+        tasks = self._serialize_tree(roots)
 
-        # Parse tasks and resource IDs from TJ3 output (first schedule CSV)
-        first_csv = next(iter(csv_files.values()))
-        tasks, resource_ids = self._parse_csv_preview(first_csv, milestone_tj_ids)
+        resource_ids = set()
+        for node in tasks:
+            resource_ids.update(node['resource_ids'])
 
         # Enrich resource IDs with display names from source files (best-effort)
         resource_names = {
@@ -193,55 +217,44 @@ class InsightImportWizard(models.TransientModel):
         return self._reopen()
 
     @staticmethod
-    def _find_milestone_task_ids(tjp_text):
-        """Best-effort detection of which TJ ids carry a bare `milestone`
-        attribute, by scanning from each `task <id> "<name>" {` opening
-        line up to the next `task` keyword found forward (its own nested
-        subtask, or the next sibling once its block closes) — TJ3 authors
-        write attributes right after the opening brace, before any nested
-        subtasks, same convention our own exporter follows. Not a real
-        parser (no brace-matching), so it's a heuristic, not a guarantee."""
-        milestone_ids = set()
-        opens = list(re.finditer(r'\btask\s+(\S+)\s+"[^"]*"\s*\{', tjp_text))
-        for i, match in enumerate(opens):
-            tj_id = match.group(1)
-            start = match.end()
-            end = opens[i + 1].start() if i + 1 < len(opens) else len(tjp_text)
-            block = tjp_text[start:end]
-            if re.search(r'^\s*milestone\b', block, re.MULTILINE):
-                milestone_ids.add(tj_id)
-        return milestone_ids
-
-    @staticmethod
-    def _parse_csv_preview(csv_content, milestone_tj_ids=None):
-        milestone_tj_ids = milestone_tj_ids or set()
-        # TJ3 uses semicolons as CSV delimiter
-        first_line = csv_content.split('\n')[0] if csv_content else ''
-        delimiter = ';' if ';' in first_line else ','
-        reader = csv.DictReader(io.StringIO(csv_content), delimiter=delimiter)
-        tasks = []
-        resource_ids = set()
-        for row in reader:
-            norm = {k.strip().lower(): (v or '').strip() for k, v in row.items() if k is not None}
-            res_str = norm.get('resources', '')
-            # TJ3 formats resources as "Full Name (resource_id)" — extract the ID in parens
-            task_res = re.findall(r'\((\w+)\)', res_str)
-            if not task_res and res_str:
-                # Fallback: plain comma/space-separated IDs (no parens)
-                task_res = [r.strip() for r in re.split(r'[,;]+', res_str) if r.strip()]
-            resource_ids.update(task_res)
-            # 'id' is the dotted TJ3 path (e.g. "root.sub.leaf"); its last
-            # segment is the local id used in the source `task <id> "..."`.
-            leaf_tj_id = norm.get('id', '').split('.')[-1]
-            tasks.append({
-                'bsi': norm.get('bsi', ''),
-                'name': norm.get('name', ''),
-                'effort': norm.get('effort', ''),
-                'resources': task_res,
-                'complete': norm.get('complete', '0'),
-                'is_milestone': leaf_tj_id in milestone_tj_ids,
-            })
-        return tasks, resource_ids
+    def _serialize_tree(roots):
+        """Aplana el árbol de TaskNode de tjp_parser a una lista de dicts
+        JSON-serializable, en pre-orden (padre siempre antes que sus
+        hijos) — así action_import puede resolver parent_id en una sola
+        pasada. Los `depends`/`precedes` ya se resuelven acá (contra el
+        árbol completo, con acceso a los nodos reales) a su full_id
+        destino — action_import solo necesita buscar ese full_id en el
+        mapa de registros ya creados, no reimplementar la resolución de
+        '!'."""
+        flat = []
+        for root in roots:
+            for node in root.walk():
+                resource_ids = []
+                primary_ids = []
+                for alloc in node.allocations:
+                    resource_ids.append(alloc.primary)
+                    resource_ids.extend(alloc.alternatives)
+                    primary_ids.append(alloc.primary)
+                flat.append({
+                    'full_id': node.full_id,
+                    'parent_full_id': node.parent.full_id if node.parent else None,
+                    'name': node.name,
+                    'effort': node.effort,
+                    'complete': node.complete,
+                    'is_milestone': node.is_milestone,
+                    'note': node.note,
+                    'primary_ids': primary_ids,
+                    'resource_ids': resource_ids,
+                    'depends': [
+                        {'target': tjp_parser.resolve_dep_ref(node, d.ref), 'modifier': d.modifier}
+                        for d in node.raw_depends
+                    ],
+                    'precedes': [
+                        {'target': tjp_parser.resolve_dep_ref(node, d.ref), 'modifier': d.modifier}
+                        for d in node.raw_precedes
+                    ],
+                })
+        return flat
 
     @staticmethod
     def _extract_zip_files(zip_bytes):
@@ -295,9 +308,27 @@ class InsightImportWizard(models.TransientModel):
 
     def action_import(self):
         self.ensure_one()
+        self._check_draft_state()
         tasks = json.loads(self.parsed_tasks_json or '[]')
         csv_files = json.loads(self.csv_files_json or '{}')
         project = self.project_id
+
+        # Reimportar reemplaza TODO lo que ya existía en el proyecto — no
+        # mergea contra un import anterior, para no terminar con tareas
+        # duplicadas si el .tjp cambió de estructura entre una corrida y
+        # la siguiente. Solo se permite en 'draft' (ver _check_draft_state)
+        # precisamente para que esto nunca borre trabajo real: en draft no
+        # debería haber timesheets ni schedules comprometidos todavía.
+        # insight.task.schedule/insight.task.dependency tienen
+        # ondelete='cascade' contra project.task, así que se limpian solos;
+        # insight.scenario (a nivel proyecto, no de tarea) no se toca —
+        # queda vacío hasta que el import de CSV más abajo lo repuebla.
+        self.env['project.task'].with_context(active_test=False).search([
+            ('project_id', '=', project.id),
+        ]).unlink()
+        self.env['project.milestone'].with_context(active_test=False).search([
+            ('project_id', '=', project.id),
+        ]).unlink()
 
         # Build user map: tj_resource_id → res.users
         user_map = {}
@@ -324,42 +355,116 @@ class InsightImportWizard(models.TransientModel):
             if project.id not in stage.project_ids.ids:
                 stage.project_ids = [(4, project.id)]
 
-        # Create task hierarchy ordered by BSI
-        bsi_task_id = {}
-        sorted_tasks = sorted(tasks, key=lambda t: self._bsi_sort_key(t['bsi']))
-        for task_data in sorted_tasks:
-            bsi = task_data['bsi']
-
-            # A TJP `milestone` is a project.milestone, not a project.task —
-            # it never gets its own task row (no bsi_task_id entry either,
-            # so nothing can end up parented under it).
-            if task_data.get('is_milestone'):
+        # Pass 1: crear tareas/milestones. `tasks` viene en pre-orden
+        # (_serialize_tree recorre el árbol padre-antes-que-hijo), así que
+        # parent_full_id siempre está ya resuelto en record_by_full_id
+        # para cuando hace falta. resource_pool_ids se llena con el pool
+        # de candidatos de `allocate` (no con quién terminó realmente
+        # asignado — eso lo corrige _sync_gantt_dates más abajo a partir
+        # del escenario baseline, igual que en un reschedule normal).
+        record_by_full_id = {}  # full_id -> ('task'|'milestone', odoo_id)
+        for node in tasks:
+            if node.get('is_milestone'):
                 if not project.allow_milestones:
                     project.allow_milestones = True
-                self.env['project.milestone'].create({
-                    'name': task_data['name'] or f'Hito {bsi}',
+                milestone = self.env['project.milestone'].create({
+                    'name': node['name'] or node['full_id'],
                     'project_id': project.id,
                 })
+                record_by_full_id[node['full_id']] = ('milestone', milestone.id)
                 continue
 
-            parent_bsi = '.'.join(bsi.split('.')[:-1]) if '.' in bsi else None
-            user_ids = [
-                user_map[res_id].id
-                for res_id in task_data.get('resources', [])
-                if user_map.get(res_id)
+            pool_ids = [
+                user_map[tj_id].id for tj_id in node.get('resource_ids', [])
+                if user_map.get(tj_id)
+            ]
+            # user_ids arranca solo con el recurso PRIMARIO de cada
+            # `allocate` (no todo el pool con alternativas, que sí va a
+            # resource_pool_ids) — un default razonable de "a quién se le
+            # asigna" antes de correr ningún schedule. Si más adelante se
+            # ejecuta un reschedule, _sync_gantt_dates corrige esto solo a
+            # partir de a quién asignó realmente el escenario baseline.
+            assigned_ids = [
+                user_map[tj_id].id for tj_id in node.get('primary_ids', [])
+                if user_map.get(tj_id)
             ]
             stage = self._resolve_task_stage(
-                task_data, stage_refine, stage_backlog, stage_done
+                {
+                    'complete': node.get('complete') or '0',
+                    'effort': node.get('effort') or '',
+                    'resources': assigned_ids,
+                },
+                stage_refine, stage_backlog, stage_done,
             )
-            task = self.env['project.task'].create({
-                'name': task_data['name'] or f'Tarea {bsi}',
+            parent_ref = record_by_full_id.get(node.get('parent_full_id'))
+            parent_task_id = parent_ref[1] if parent_ref and parent_ref[0] == 'task' else False
+            vals = {
+                'name': node['name'] or node['full_id'],
                 'project_id': project.id,
-                'parent_id': bsi_task_id.get(parent_bsi) if parent_bsi else False,
-                'allocated_hours': self._effort_to_hours(task_data.get('effort', '')),
-                'user_ids': [(6, 0, user_ids)],
+                'parent_id': parent_task_id,
+                'allocated_hours': self._effort_to_hours(node.get('effort') or ''),
+                'resource_pool_ids': [(6, 0, pool_ids)],
+                'user_ids': [(6, 0, assigned_ids)],
+                'description': node.get('note') or False,
                 'stage_id': stage.id,
-            })
-            bsi_task_id[bsi] = task.id
+            }
+            if stage == stage_done:
+                # project.task.state (nativo, distinto de stage_id) no se
+                # deriva de la etapa — _compute_state solo alterna entre
+                # 'en progreso'/'esperando' según dependencias abiertas, y
+                # respeta un valor ya cerrado ('done'/'cancelado') sin
+                # pisarlo. Sin esto, una tarea importada 100% completa
+                # quedaba con state='en progreso' (o 'esperando' si algo
+                # dependía de ella), aunque su stage_id ya mostrara
+                # "Completada" — y de paso arrastraba a sus dependientes a
+                # verse "esperando" una tarea que en realidad ya terminó.
+                vals['state'] = '1_done'
+            task = self.env['project.task'].create(vals)
+            record_by_full_id[node['full_id']] = ('task', task.id)
+
+        # Pass 2: resolver depends/precedes (tareas reales) y task_ids
+        # (milestones) contra record_by_full_id — necesita que TODAS las
+        # tareas ya existan, porque una dependencia puede apuntar hacia
+        # adelante en el árbol. Referencias a tareas fuera de este import
+        # (ej. otro "eje" en un archivo separado) se ignoran en silencio,
+        # no hay nada contra qué linkear.
+        for node in tasks:
+            ref = record_by_full_id.get(node['full_id'])
+            if not ref:
+                continue
+            kind, odoo_id = ref
+            if kind == 'milestone':
+                dep_task_ids = [
+                    target[1] for dep in node.get('depends', [])
+                    if (target := record_by_full_id.get(dep['target'])) and target[0] == 'task'
+                ]
+                if dep_task_ids:
+                    self.env['project.milestone'].browse(odoo_id).task_ids = [(6, 0, dep_task_ids)]
+                continue
+
+            depend_on_ids = []
+            overrides = []  # (depends_on_id, dependency_type)
+            for dep in node.get('depends', []):
+                target = record_by_full_id.get(dep['target'])
+                if not target or target[0] != 'task':
+                    continue
+                depend_on_ids.append(target[1])
+                if dep.get('modifier') == 'onstart':
+                    overrides.append((target[1], 'SS'))
+            for dep in node.get('precedes', []):
+                target = record_by_full_id.get(dep['target'])
+                if not target or target[0] != 'task':
+                    continue
+                depend_on_ids.append(target[1])
+                overrides.append((target[1], 'FF'))
+            if not depend_on_ids:
+                continue
+            self.env['project.task'].browse(odoo_id).depend_on_ids = [(6, 0, depend_on_ids)]
+            for depends_on_id, dep_type in overrides:
+                self.env['insight.task.dependency'].create({
+                    'task_id': odoo_id, 'depends_on_id': depends_on_id,
+                    'dependency_type': dep_type,
+                })
 
         # Create scenarios and import schedules
         for filename, csv_content in csv_files.items():
@@ -428,13 +533,6 @@ class InsightImportWizard(models.TransientModel):
         if zero_effort and not task_data.get('resources'):
             return stage_refine
         return stage_backlog
-
-    @staticmethod
-    def _bsi_sort_key(bsi):
-        try:
-            return [int(p) for p in (bsi or '0').split('.')]
-        except ValueError:
-            return [0]
 
     @staticmethod
     def _effort_to_hours(effort_str):

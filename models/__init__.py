@@ -8,6 +8,7 @@ from . import project_project
 from . import report_cost_report
 from . import project_task
 from . import project_milestone
+from . import tjp_parser
 from . import insight_import_wizard
 from . import insight_unscheduled_tasks_wizard
 from . import hr_employee

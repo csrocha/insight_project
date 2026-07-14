@@ -23,28 +23,20 @@ sintético+`alap` que se especulaba acá — `precedes {onend}` alcanza por
 sí solo. Ver CHANGELOG.md [17.0.9.6.10] y memoria
 `project_tj3_feature_backlog`.
 
-### 2. Gaps del wizard de import de `.tjp` externos
+### ~~2. Gaps del wizard de import de `.tjp` externos~~ — RESUELTO
 
-En `insight_import_wizard.py` (importar un `.tjp` de afuera de Odoo, no el
-roundtrip de reschedule):
-
-- **`depends` se ignora por completo al importar** — las dependencias
-  declaradas en el archivo externo se pierden en silencio; no quedan
-  registradas en `project.task.depend_on_ids`.
-- **`note` se pierde end-to-end** — ni el `taskreport` inyectado ni
-  `_parse_csv_preview` lo leen; ese texto nunca llega a Odoo.
-- **Milestones importados quedan con `task_ids` vacío** (consecuencia del
-  fix "los milestones son milestones, no son tareas"): como ya no se crea
-  un `project.task` para el milestone, `_tjp_milestone_block` (lado
-  export) nunca los va a re-emitir en un reschedule futuro — su guard
-  `if not dep_tasks: return []` los omite. Si se quiere que un milestone
-  importado sobreviva al roundtrip export→TJ3→import, hace falta resolver
-  el gap de `depends` (arriba) y linkear el milestone a esas tareas reales
-  en el import, en vez de dejarlo sin `task_ids`.
-
-_Fuente: memoria de sesión (`project_insight_tjp_import_gaps`), confirmado
-reproduciendo contra un `.tjp` de producción real y el microservicio
-`tj3-ms`._
+Resuelto (2026-07-14): `insight_import_wizard.py` ahora parsea el `.tjp`
+fuente con un parser real (`models/tjp_parser.py`, consciente de llaves y
+strings — no un regex heurístico) en vez del CSV que devuelve TJ3, que
+nunca tuvo columna de dependencias ni de notas. `depend_on_ids`,
+`resource_pool_ids`, `description` (de `note`) y `task_ids` de milestones ya
+no se pierden al importar. De paso se encontró y arregló un bug real de
+export (`_tjp_task_abs_path` emitía siempre un solo `!`, TJ3 rechazaba
+dependencias entre tareas anidadas — confirmado contra el binario real
+tj3-ms v3.8.4), y se agregó reimportar (reemplaza tareas/milestones
+existentes, solo permitido con el proyecto en estado `draft`). Ver
+CHANGELOG.md y memoria `project_insight_tjp_import_gaps` (actualizarla si
+se retoma este tema, ya no refleja el estado actual).
 
 ---
 
