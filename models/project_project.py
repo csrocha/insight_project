@@ -125,7 +125,13 @@ class ProjectProject(models.Model):
         except (ValueError, TypeError):
             timeout = 120
 
-        tjp_content = self._generate_tjp()
+        # Recordset combinado: todos los proyectos 'en progreso' + self (el
+        # proyecto que dispara la corrida), sin importar su propio estado —
+        # ver _tj_portfolio_recordset. _call_tj_microservice sigue
+        # invocándose sobre `self` (no `combined`): solo postea errores al
+        # chatter del proyecto que disparó la corrida, no a todo el portfolio.
+        combined = self._tj_portfolio_recordset()
+        tjp_content = combined._generate_tjp(active_project=self)
         try:
             response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
         except UnscheduledTasksError as exc:
@@ -137,8 +143,14 @@ class ProjectProject(models.Model):
                 return self._action_unscheduled_tasks_wizard(exc.message)
             raise UserError(exc.message) from exc
 
-        imported = self._import_all_schedules(response_data.get('csv_files', {}))
-        self.write({
+        imported = combined._import_all_schedules(
+            response_data.get('csv_files', {}), active_project=self,
+        )
+        # Write-back asimétrico (ver _import_all_schedules): en evaluación
+        # solo se tocó el schedule de self, los demás proyectos combinados
+        # ni se marcan como recién planificados.
+        persisted = combined if self.state == 'progress' else self
+        persisted.write({
             'schedule_dirty': False,
             'last_scheduled': fields.Datetime.now(),
         })
@@ -153,6 +165,34 @@ class ProjectProject(models.Model):
                 'sticky': False,
             },
         }
+
+    def _tj_portfolio_recordset(self):
+        """Recordset a combinar en una corrida de scheduling: todos los
+        proyectos 'en progreso' + `self` (el que dispara la corrida), sin
+        importar su propio estado — así 'en evaluación' compite por los
+        mismos recursos reales que 'en progreso' ya tiene comprometidos, y
+        'en progreso' se recalcula junto con sus pares."""
+        self.ensure_one()
+        progress_projects = self.search([('state', '=', 'progress')])
+        return progress_projects | self
+
+    def _cron_run_portfolio_schedule(self):
+        """Recorrido diario (ver data/insight_cron.xml): recalcula juntos
+        todos los proyectos 'en progreso' con TJ3 habilitado. Usa el primero
+        como disparador (`active_project`) solo para el header/etiqueta del
+        .tjp — es cosmético, no afecta el cálculo real — y al estar en
+        'progress' el write-back persiste igual para todos los incluidos
+        (ver action_run_schedule/_import_all_schedules)."""
+        progress_projects = self.search([
+            ('state', '=', 'progress'), ('is_tj_enabled', '=', True),
+        ])
+        if not progress_projects:
+            return
+        driver = progress_projects[0]
+        try:
+            driver.action_run_schedule(interactive=False)
+        except UserError as exc:
+            driver.message_post(body=str(exc))
 
     def _check_horizon_overrun(self):
         """Avisa (sin sobreescribir self.date) cuando el horizonte de
@@ -316,12 +356,22 @@ class ProjectProject(models.Model):
 
     # ── TJP Generator ─────────────────────────────────────────────────────────
 
-    def _generate_tjp(self):
-        self.ensure_one()
-        scenarios = self.scenario_ids  # snapshot once — both header and reports must agree
+    def _generate_tjp(self, active_project=None):
+        """Genera el .tjp para todos los proyectos de `self` — uno o varios,
+        sin caso especial para N=1. `active_project` es el proyecto que
+        dispara la corrida: determina la jerarquía de escenarios TJ3 (ver
+        _tjp_project_header) y qué reportes se generan (_tjp_reports); los
+        demás proyectos de `self` son agnósticos a escenario, solo aportan
+        sus tareas/recursos para que la contención de recursos sea real.
+        Default a `self` cuando es un único proyecto (comportamiento de
+        siempre)."""
+        if active_project is None:
+            self.ensure_one()
+            active_project = self
+        scenarios = active_project.scenario_ids  # snapshot once — header y reports deben coincidir
         now_date = self._tjp_now_date()
         lines = []
-        lines += self._tjp_project_header(scenarios, now_date)
+        lines += self._tjp_project_header(scenarios, now_date, active_project=active_project)
         lines += self._tjp_cost_account()
         lines += self._tjp_shift_declarations(now_date)
         for user in self._tj_project_users():
@@ -339,27 +389,44 @@ class ProjectProject(models.Model):
 
     def _tjp_now_date(self):
         """Referencia real de 'hoy' para el scheduler — a diferencia del
-        `start` del proyecto (fijo, `date_start`), esta fecha debe avanzar en
-        cada corrida para que los `booking` (ver _tjp_bookings) protejan
-        correctamente el trabajo ya realizado. Nunca antes de `date_start`:
-        si el proyecto todavía no arrancó, no puede haber bookings pasados
-        que proteger."""
-        self.ensure_one()
-        start = self.date_start or fields.Date.today()
+        `start` de cada proyecto de `self` (fijo, `date_start`), esta fecha
+        debe avanzar en cada corrida para que los `booking` (ver
+        _tjp_bookings) protejan correctamente el trabajo ya realizado. Nunca
+        antes del `date_start` más temprano de `self`: si ningún proyecto
+        arrancó todavía, no puede haber bookings pasados que proteger. Es
+        una única fecha para todo el archivo (TJ3 solo admite un `now` por
+        proyecto/archivo), por eso se toma el mínimo entre proyectos
+        combinados en vez de la fecha de uno solo."""
+        starts = [p.date_start or fields.Date.today() for p in self]
+        start = min(starts) if starts else fields.Date.today()
         return max(fields.Date.today(), start)
 
-    def _tjp_project_header(self, scenarios=None, now_date=None):
+    def _tjp_project_header(self, scenarios=None, now_date=None, active_project=None):
+        """Un único bloque `project {}` para todo el archivo — TJ3 no admite
+        más de uno. Id/nombre/timezone/moneda salen de `active_project` (es
+        solo una etiqueta del archivo, default `self` cuando es un único
+        proyecto — comportamiento de siempre); en cambio `start`/`end` deben
+        cubrir a TODOS los proyectos de `self`, no solo a `active_project`,
+        o TJ3 rechazaría tareas de los demás proyectos combinados por caer
+        fuera de la ventana declarada."""
+        if active_project is None:
+            self.ensure_one()
+            active_project = self
         if scenarios is None:
-            scenarios = self.scenario_ids
-        proj_id = f'p{self.id}'
-        name = (self.name or 'Project').replace('"', "'")
-        start = self.date_start or fields.Date.today()
-        end = self._tjp_project_end_date(start)
-        tz = self.tj_timezone or 'UTC'
+            scenarios = active_project.scenario_ids
+        proj_id = f'p{active_project.id}'
+        name = (active_project.name or 'Project').replace('"', "'")
+        starts = [p.date_start or fields.Date.today() for p in self]
+        start = min(starts) if starts else fields.Date.today()
+        ends = [p._tjp_project_end_date(p.date_start or fields.Date.today()) for p in self]
+        end = max(ends) if ends else self._tjp_project_end_date(start)
+        tz = active_project.tj_timezone or 'UTC'
         if now_date is None:
             now_date = self._tjp_now_date()
 
-        currency = (self.company_id.currency_id.name if self.company_id else False) or 'USD'
+        currency = (
+            active_project.company_id.currency_id.name if active_project.company_id else False
+        ) or 'USD'
         lines = [
             f'project {proj_id} "{name}" {start} - {end} {{',
             f'  timezone "{tz}"',
@@ -475,18 +542,23 @@ class ProjectProject(models.Model):
 
     def _tj_project_users(self):
         """res.users deduplicado a partir del pool de candidatos efectivo de
-        cada tarea del proyecto (resource_pool_ids si está definido, si no
+        cada tarea de `self` (resource_pool_ids si está definido, si no
         user_ids), más el de cada puesto adicional simultáneo
         (extra_skill_group_ids, ver project_improve). Cualquier candidato
         potencial de una tarea necesita su propio bloque `resource`, no solo
         quien termine asignado.
+
+        `self` puede ser un solo proyecto o un recordset combinado (ver
+        _generate_tjp) — `self.task_ids` ya devuelve la unión de tareas de
+        todos los proyectos del recordset, así que el acumulado sale sin
+        caso especial para N=1: cada usuario se declara una sola vez aunque
+        sea candidato en más de un proyecto a la vez.
 
         También se incluye a quien haya imputado timesheets en la tarea aunque
         no esté en ese pool: su `booking` (ver _tjp_bookings) referenciaría un
         recurso no declarado y TJ3 fallaría al parsear el .tjp. Esto no lo
         convierte en candidato para trabajo futuro — _tjp_allocate sigue
         leyendo solo resource_pool_ids/user_ids/extra_skill_group_ids."""
-        self.ensure_one()
         users = self.env['res.users']
         for task in self.task_ids:
             users |= task.resource_pool_ids or task.user_ids
@@ -654,7 +726,7 @@ class ProjectProject(models.Model):
             lines.append(f'{ind}  chargeset {self._TJP_COST_ACCOUNT_ID}')
 
         child_tasks = task.child_ids.filtered(
-            lambda t: t.project_id == self
+            lambda t: t.project_id == task.project_id
         ).sorted('sequence')
 
         if not child_tasks:
@@ -698,7 +770,7 @@ class ProjectProject(models.Model):
         #    en vez de exportar un .tjp que TJ3 agenda mal sin avisar.
         ff_dep = None
         for dep in task.depend_on_ids:
-            if dep.project_id != self:
+            if dep.project_id != task.project_id:
                 continue
             dep_type = task._tj_dependency_type_for(dep)
             if dep_type == 'FF':
@@ -776,7 +848,7 @@ class ProjectProject(models.Model):
         a él (milestone.task_ids). Se omite si no tiene ninguna tarea
         enlazada en este proyecto: no hay contra qué anclarla en el
         schedule."""
-        dep_tasks = milestone.task_ids.filtered(lambda t: t.project_id == self)
+        dep_tasks = milestone.task_ids.filtered(lambda t: t.project_id == milestone.project_id)
         if not dep_tasks:
             return []
         m_id = self._tjp_milestone_id(milestone)
@@ -1090,11 +1162,15 @@ class ProjectProject(models.Model):
 
     @staticmethod
     def _tjp_scenario_id(scenario):
+        """Prefijado con el id del proyecto dueño del escenario — necesario
+        para que una corrida combinada (ver _generate_tjp) no confunda dos
+        escenarios de distintos proyectos con el mismo nombre (ej. "Default"
+        en dos proyectos distintos)."""
         raw = re.sub(r'[^a-zA-Z0-9_]', '_', scenario.name or 'scenario')
         raw = re.sub(r'_+', '_', raw).strip('_') or 'scenario'
         if raw[0].isdigit():
             raw = 'sc_' + raw
-        return raw.lower()[:24]
+        return f'p{scenario.project_id.id}_{raw.lower()}'[:24]
 
     @staticmethod
     def _tjp_shift_id(calendar):
@@ -1108,20 +1184,59 @@ class ProjectProject(models.Model):
 
     # ── Schedule import ───────────────────────────────────────────────────────
 
-    def _import_all_schedules(self, csv_files):
-        """Dispatch each CSV file to its matching scenario; return count imported."""
-        sc_map = {self._tjp_scenario_id(sc): sc for sc in self.scenario_ids}
+    def _import_all_schedules(self, csv_files, active_project=None):
+        """`self` es el recordset combinado de la corrida (uno o varios
+        proyectos, ver _generate_tjp/_tj_portfolio_recordset). Los
+        escenarios de la corrida siempre vienen de `active_project` (los
+        demás proyectos combinados son agnósticos a escenario). Write-back
+        asimétrico: si `active_project.state == 'evaluation'`, solo se
+        persiste el schedule de `active_project` — los demás proyectos
+        combinados se parsean en memoria nada más (_parse_scenario_csv_preview,
+        sin tocar su insight.task.schedule real) para alimentar el reporte
+        de impacto (_tj_generate_evaluation_impact_report). Si está en
+        'progress', se persiste el de todos los proyectos incluidos, cada
+        uno contra su propio escenario baseline (nunca contra el de
+        `active_project` — un insight.task.schedule exige que
+        scenario_id.project_id == task_id.project_id)."""
+        if active_project is None:
+            self.ensure_one()
+            active_project = self
+        persist_projects = self if active_project.state == 'progress' else active_project
+        preview_projects = self - persist_projects
+
+        sc_map = {self._tjp_scenario_id(sc): sc for sc in active_project.scenario_ids}
         imported = 0
+        preview_by_project = {}
         for filename, csv_content in csv_files.items():
             base = filename.rsplit('.', 1)[0]
             sc_key = base[len('schedule_'):] if base.startswith('schedule_') else base
             scenario = sc_map.get(sc_key)
             if not scenario:
                 continue
-            self._import_scenario_csv(csv_content, scenario)
             imported += 1
-        self._apply_selection_strategy()
-        self._sync_gantt_dates()
+            # `scenario` es un insight.scenario de active_project — solo se
+            # puede usar tal cual para persistir las filas del propio
+            # active_project (insight.task.schedule exige que
+            # scenario_id.project_id == task_id.project_id). Los demás
+            # proyectos combinados ('progress' peers) persisten contra SU
+            # PROPIO escenario baseline, y solo para la corrida baseline —
+            # no tiene sentido comparar sus tareas contra una variante
+            # hipotética de active_project que no les pertenece.
+            active_project._import_scenario_csv(csv_content, scenario)
+            if scenario.is_baseline:
+                for project in persist_projects - active_project:
+                    peer_scenario = project.scenario_ids.filtered('is_baseline')[:1]
+                    if peer_scenario:
+                        project._import_scenario_csv(csv_content, peer_scenario)
+                for project in preview_projects:
+                    preview_by_project[project.id] = project._parse_scenario_csv_preview(
+                        csv_content, scenario,
+                    )
+        for project in persist_projects:
+            project._apply_selection_strategy()
+            project._sync_gantt_dates()
+        if preview_projects:
+            active_project._tj_generate_evaluation_impact_report(preview_projects, preview_by_project)
         return imported
 
     # ── Selección de escenario ───────────────────────────────────────────────
@@ -1134,7 +1249,7 @@ class ProjectProject(models.Model):
         contarse al medir concurrencia de recursos."""
         return {
             t.id for t in self.task_ids
-            if not t.child_ids.filtered(lambda c: c.project_id == self)
+            if not t.child_ids.filtered(lambda c: c.project_id == t.project_id)
         }
 
     def _peak_concurrent_resources(self, scenario, leaf_task_ids):
@@ -1294,14 +1409,12 @@ class ProjectProject(models.Model):
                 vals['user_ids'] = [(6, 0, schedule.resource_ids.ids)]
             schedule.task_id.write(vals)
 
-    def _import_scenario_csv(self, csv_content, scenario):
-        """Parse a TJ3 CSV report and upsert insight.task.schedule records."""
-        Schedule = self.env['insight.task.schedule']
-        Schedule.search([
-            ('scenario_id', '=', scenario.id),
-            ('task_id.project_id', '=', self.id),
-        ]).unlink()
-
+    def _parse_tj_schedule_csv(self, csv_content, scenario):
+        """Parsea un CSV de reporte TJ3 y devuelve (vals_list,
+        milestone_dates) para las tareas/hitos de `self` — sin tocar la
+        base. Compartido por `_import_scenario_csv` (persiste) y
+        `_parse_scenario_csv_preview` (modo evaluación, no persiste)."""
+        self.ensure_one()
         tz_name = self.tj_timezone or 'UTC'
         valid_task_ids = set(
             self.env['project.task'].search([('project_id', '=', self.id)]).ids
@@ -1336,10 +1449,150 @@ class ProjectProject(models.Model):
             if scenario.is_baseline and milestone_odoo_id and milestone_odoo_id in valid_milestone_ids:
                 end = self._parse_tj_datetime(norm.get('end', ''), tz_name)
                 milestone_dates[milestone_odoo_id] = end.date() if end else False
+        return vals_list, milestone_dates
+
+    def _import_scenario_csv(self, csv_content, scenario):
+        """Parse a TJ3 CSV report and upsert insight.task.schedule records."""
+        Schedule = self.env['insight.task.schedule']
+        Schedule.search([
+            ('scenario_id', '=', scenario.id),
+            ('task_id.project_id', '=', self.id),
+        ]).unlink()
+        vals_list, milestone_dates = self._parse_tj_schedule_csv(csv_content, scenario)
         if vals_list:
             Schedule.create(vals_list)
         for milestone_id, scheduled_date in milestone_dates.items():
             self.env['project.milestone'].browse(milestone_id).tj_scheduled_date = scheduled_date
+
+    def _parse_scenario_csv_preview(self, csv_content, scenario):
+        """Como _import_scenario_csv pero sin persistir nada — usado por el
+        modo evaluación (ver _import_all_schedules) para saber cómo
+        quedarían las tareas/hitos de `self` sin tocar su
+        insight.task.schedule real, y poder compararlo contra lo ya
+        persistido en _tj_generate_evaluation_impact_report."""
+        vals_list, milestone_dates = self._parse_tj_schedule_csv(csv_content, scenario)
+        return {
+            'tasks': {v['task_id']: v for v in vals_list},
+            'milestones': milestone_dates,
+        }
+
+    # ── Reporte de impacto de evaluación (knowledge.asset) ──────────────────
+    #
+    # Cuando `self` (active_project) está 'en evaluación', _import_all_schedules
+    # no persiste el schedule de los proyectos 'en progreso' incluidos en la
+    # corrida combinada — solo lo parsea en memoria (_parse_scenario_csv_preview)
+    # para poder mostrar acá cómo se verían afectados SI se aceptara `self`,
+    # sin haber tocado su schedule real. Mismo patrón que los reportes de
+    # costo (_get_or_create_cost_asset/_compute_and_save_cost_reports):
+    # un knowledge.asset por proyecto evaluado, versionado en cada corrida.
+
+    _TJP_EVALUATION_IMPACT_CATEGORY = 'insight_project.evaluation_impact_report'
+
+    def _get_or_create_evaluation_impact_asset(self):
+        self.ensure_one()
+        Asset = self.env['knowledge.asset']
+        asset = Asset.search([
+            ('res_model', '=', 'project.project'),
+            ('res_id', '=', self.id),
+            ('category', '=', self._TJP_EVALUATION_IMPACT_CATEGORY),
+        ], limit=1)
+        if asset:
+            return asset
+        manager_group = self.env.ref('project.group_project_manager', raise_if_not_found=False)
+        return Asset.create({
+            'name': _('Impacto de evaluación — %s') % self.name,
+            'res_model': 'project.project',
+            'res_id': self.id,
+            'category': self._TJP_EVALUATION_IMPACT_CATEGORY,
+            'visibility': 'shared',
+            'shared_group_ids': [(6, 0, manager_group.ids)] if manager_group else False,
+        })
+
+    def _tj_generate_evaluation_impact_report(self, other_projects, preview_by_project):
+        """`self` es active_project (en evaluación). `other_projects` son los
+        proyectos 'en progreso' incluidos en la corrida combinada cuyo
+        schedule NO se persistió; `preview_by_project` trae, por proyecto,
+        lo que habría pasado si se integrara `self` (parseado en memoria vía
+        _parse_scenario_csv_preview). Publica una versión nueva de
+        knowledge.asset con el delta de fechas, impacto en usuarios e
+        indicadores de desvío por proyecto afectado."""
+        self.ensure_one()
+        projects_payload = []
+        for project in other_projects:
+            preview = preview_by_project.get(project.id)
+            if not preview:
+                continue
+            summary = self._tj_project_impact_summary(project, preview)
+            if summary['task_deltas'] or summary['milestone_deltas']:
+                projects_payload.append(summary)
+        if not projects_payload:
+            return
+        asset = self._get_or_create_evaluation_impact_asset()
+        payload = {
+            'title': _('Impacto de integrar "%s" al portfolio en progreso') % self.name,
+            'generated_at': fields.Datetime.to_string(fields.Datetime.now()),
+            'projects': projects_payload,
+        }
+        asset.create_version(
+            payload, schema='insight_project.evaluation_impact', schema_version='1.0',
+        )
+
+    def _tj_project_impact_summary(self, project, preview):
+        """Compara lo ya persistido (insight.task.schedule del baseline
+        actual de `project`) contra lo hipotético (`preview`, sin persistir)
+        — delta de fecha por tarea raíz/hito, usuarios cuya asignación
+        cambia, y un indicador general de corrimiento de fin de proyecto."""
+        baseline = project.scenario_ids.filtered('is_baseline')[:1]
+        current_by_task = {s.task_id.id: s for s in baseline.schedule_ids} if baseline else {}
+        root_task_ids = set(project.task_ids.filtered(lambda t: not t.parent_id).ids)
+
+        task_deltas = []
+        max_slip_days = 0
+        old_users, new_users = set(), set()
+        for task_id, new_vals in preview['tasks'].items():
+            old_schedule = current_by_task.get(task_id)
+            if old_schedule:
+                old_users |= set(old_schedule.resource_ids.ids)
+            for cmd in new_vals.get('resource_ids') or []:
+                new_users |= set(cmd[2])
+            if task_id not in root_task_ids:
+                continue
+            old_end = old_schedule.end_scheduled if old_schedule else False
+            new_end = new_vals.get('end_scheduled')
+            if not old_end or not new_end or old_end == new_end:
+                continue
+            slip_days = (new_end - old_end).days
+            task_deltas.append({
+                'task': self.env['project.task'].browse(task_id).name,
+                'old_end': str(old_end),
+                'new_end': str(new_end),
+                'slip_days': slip_days,
+            })
+            max_slip_days = max(max_slip_days, abs(slip_days))
+
+        milestone_deltas = []
+        for milestone_id, new_date in preview['milestones'].items():
+            milestone = self.env['project.milestone'].browse(milestone_id)
+            old_date = milestone.tj_scheduled_date
+            if old_date and new_date and old_date != new_date:
+                milestone_deltas.append({
+                    'milestone': milestone.name,
+                    'old_date': str(old_date),
+                    'new_date': str(new_date),
+                    'slip_days': (new_date - old_date).days,
+                })
+
+        affected_users = self.env['res.users'].browse(list(old_users ^ new_users))
+        return {
+            'project': project.name,
+            'project_id': project.id,
+            'max_slip_days': max_slip_days,
+            'task_deltas': task_deltas,
+            'milestone_deltas': milestone_deltas,
+            'resource_count_before': len(old_users),
+            'resource_count_after': len(new_users),
+            'affected_users': affected_users.mapped('name'),
+        }
 
     @staticmethod
     def _parse_task_id_from_tj_id(tj_id):

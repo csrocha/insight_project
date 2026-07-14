@@ -50,42 +50,19 @@ reproduciendo contra un `.tjp` de producción real y el microservicio
 
 ## De la conversación de hoy
 
-### 3. Scheduling de portfolio (multi-proyecto) para aprovechar recursos compartidos
+### ~~3. Scheduling de portfolio (multi-proyecto) para aprovechar recursos compartidos~~ — RESUELTO
 
-Hoy `action_run_schedule()` agenda un proyecto a la vez: un `.tjp` con un
-solo `project`, un pool de recursos y una ventana de fechas. Si una
-persona ya está comprometida en el Proyecto A, el Proyecto B lo agenda
-como si estuviera libre — no hay noción de carga real compartida entre
-proyectos.
-
-Idea: introducir una etapa de proyecto (campo nuevo, no existe hoy en
-`project.project` — ni en Odoo core ni en `insight_project`/
-`project_improve` hay nada tipo draft/running):
-
-- **Draft**: comportamiento actual, `action_run_schedule()` agenda solo
-  ese proyecto. Sirve para evaluar y presupuestar proyectos individuales
-  antes de aceptarlos.
-- **Running/integrado**: una vez aceptado, el reschedule pasa a incluir
-  a **todos** los proyectos en este estado en un único `.tjp` (un solo
-  `project`, un pool de recursos compartido armado a partir de
-  `_tj_project_users()` de cada proyecto involucrado), para que
-  `select minallocated` y el análisis de picos de concurrencia reflejen
-  la carga real entre proyectos.
-
-Punto abierto (de gobernanza, no técnico): en modo portfolio, replanificar
-un proyecto deja de ser una acción aislada de su dueño — puede mover
-fechas o la asignación de recursos de otros proyectos "running". Falta
-decidir quién dispara ese reschedule combinado (¿cron nocturno? ¿botón
-manual con aviso a los demás project managers?) antes de construirlo.
-
-**Nota (2026-07-13):** existe una versión más completa de este diseño (3
-estados: draft/en evaluación/en progreso, con mensaje de impacto cruzado
-en el chatter) documentada en la memoria `project_portfolio_scheduling_states`
-— no implementada tampoco, es la referencia a usar si se retoma este ítem.
-Si el multi-proyecto completo resulta demasiado grande para atacar de una,
-el ítem 5 de abajo (prioridad entre proyectos como desempate) es un primer
-paso más chico que no requiere agregar todos los proyectos a un único
-`.tjp`.
+Resuelto en v17.0.9.7.5 (2026-07-14): campo `state` (draft/evaluación/
+progreso/finalizado) en `project_improve`; `_generate_tjp()`/
+`_tj_project_users()` multi-proyecto sin caso especial para N=1;
+write-back asimétrico (evaluación → solo el proyecto activo; progreso →
+todos los incluidos, cada uno contra su propio escenario baseline);
+cron diario para recalcular los proyectos "en progreso" juntos; reporte
+de impacto (`knowledge.asset`) cuando una evaluación afecta a proyectos
+en progreso, en vez del mensaje de chatter que preveía el diseño
+original. Ver CHANGELOG.md [17.0.9.7.5] para el detalle completo y los
+2 bugs reales encontrados durante la implementación. Memoria
+`project_portfolio_scheduling_states` actualizada con el estado final.
 
 ---
 
@@ -174,6 +151,73 @@ _Fuente: backlog de ecosistema propuesto por el usuario (2026-07-13,
 "Épica 1" ítem 2 y "Épica 2" completa). Ver `project_ecosystem_roadmap` en
 memoria para el resto de las épicas (riesgos, EVM, portal, IA), que no
 tienen todavía un módulo/archivo `BACKLOG.md` propio._
+
+---
+
+## De la conversación de hoy (2026-07-14)
+
+### 8. Clonar proyecto + concepto de "proyecto template" (calibración histórica de esfuerzo)
+
+Surgió al diseñar los botones de estado de portfolio scheduling (draft/
+evaluación/progreso/finalizado, ver CHANGELOG — campo `state` +
+`resource_priority` en `project_improve`, motor multi-proyecto en
+`insight_project`). Se descartó agregar un botón "Reabrir" desde
+Finalizado — en cambio, la idea es un botón **Clonar**:
+
+- Crea un `project.project` nuevo en estado Draft, con la misma
+  estructura de tareas, misma asignación de personal/skills
+  (`user_ids`/`resource_pool_ids`/`extra_skill_group_ids`) que el
+  proyecto origen — pero con `allocated_hours` de cada tarea ajustado a
+  lo que **realmente** costó ejecutarla, no a lo planificado (ej. una
+  tarea pensada en 100hs que terminó en 120hs se clona con 120hs).
+- **Concepto de "proyecto template"**: el proyecto que dio origen a una
+  cadena de clones. Un clon puede a su vez clonarse de nuevo, formando
+  una cadena (template → clon 1 → clon 2 → ...). Lo que se calibra en
+  cada clonación no es solo la última ejecución (la del padre
+  inmediato), sino el estadístico agregado de **todas** las ejecuciones
+  históricas de esa misma tarea a través de toda la cadena — así el
+  estimado se afina con cada ciclo real completado, no solo con el más
+  reciente.
+- **Estadístico de calibración**: horas reales trabajadas (timesheets),
+  no el `allocated_hours` original ni el `effort`/`duration` de TJ3.
+  Se descartó calcular percentil 90 con recorte de outliers por
+  complejidad — arrancar con la **mediana** (robusta a outliers sin
+  necesitar lógica de recorte aparte, y más representativa de "cuánto
+  tarda típicamente" que p90, que sobreestima sistemáticamente por
+  pensarse como buffer de seguridad, no como estimación central).
+  Revisar esta elección solo si la calibración en la práctica no da
+  buenos resultados.
+- **Manejo de `insight.scenario.efficiency` al clonar**: los recursos
+  que ya participaron en ejecuciones previas de la tarea se clonan con
+  `efficiency = 1` — el promedio calibrado de horas reales YA
+  incorpora el rendimiento real de ese recurso, así que aplicar un
+  efficiency extra encima duplicaría el ajuste. Los recursos nuevos
+  (sin historia en esa tarea) no reciben ningún cálculo automático de
+  efficiency ni de horas — queda a criterio manual del administrador
+  del proyecto.
+
+**Gaps de diseño que faltan resolver antes de codear** (no son
+triviales, quedan para cuando se retome este ítem):
+- Identidad de tarea a través de clones: hoy cada clon crearía
+  `project.task` nuevos sin ningún vínculo al original — hace falta un
+  campo tipo `source_task_id`/`template_task_id` (o un mecanismo
+  equivalente) para poder agrupar "la misma tarea" a través de toda la
+  cadena de clones y calcular el estadístico histórico.
+- De qué fuente exacta salen las "horas reales" por tarea: hoy no hay
+  ningún campo que ya calcule esto — probablemente `task.timesheet_ids`
+  agregado, pero falta confirmar contra el código si alcanza o si hace
+  falta otra fuente (ej. `insight.task.schedule` con `complete=100`).
+- Remapeo de dependencias (`depend_on_ids`) entre las tareas nuevas del
+  clon — las dependencias del original apuntan a los `project.task.id`
+  viejos, no a los del clon.
+- Qué proyectos de la cadena cuentan para el promedio histórico: ¿solo
+  los que llegaron a estado Finalizado, o cualquiera con horas
+  imputadas independientemente de su estado actual?
+
+_Fuente: conversación del usuario sobre UI de estados de portfolio
+scheduling (2026-07-14), explícitamente pospuesto ("no nos volvamos
+locos" con el cálculo) — anotado para no perderlo, no implementado
+todavía._
 
 ---
 

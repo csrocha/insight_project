@@ -9,6 +9,115 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.5] - 2026-07-14
+
+### Prompt
+
+> "Dentro del backlog hay una funcionalidad que quiero darle más
+> prioridad, que corresponde a los estados de los proyectos en draft,
+> evaluación y en progreso. Estamos listos para implementarla?" / "_generate_tjp
+> debería ser aplicable a múltiples proyectos [...] En el caso que se
+> ejecute contra solo un proyecto no debería ser un caso especial." /
+> "Si el active_id tiene estado evaluación entonces solo se actualiza
+> active_id, y si está en modo progreso se actualizan todos." / "El diff
+> no es importante pero si el resultado de la ejecución en modo
+> validación [...] hay que agregar un reporte nuevo que diga a qué fecha
+> se moverán los otros proyectos [...] Es un reporte del tipo
+> knowledge.asset." / "El message post no tienen ningún tratamiento
+> especial. No es necesario."
+
+### Discusión de diseño
+
+- Auditoría previa (2026-07-13) confirmó que nada de esto existía:
+  sin campo de estado en `project.project`, `_generate_tjp()`/
+  `_tj_project_users()` estrictamente de un solo proyecto,
+  `_apply_selection_strategy()` intra-proyecto. El diseño de 3 estados
+  (draft/evaluación/progreso) discutido esa sesión quedó documentado en
+  memoria (`project_portfolio_scheduling_states`) como referencia — este
+  ciclo lo implementó, con ajustes reales respecto a esa versión.
+- El usuario insistió en que la generación del `.tjp` no debía tener un
+  caso especial para un solo proyecto: `_generate_tjp`/`_tj_project_users`
+  pasan a operar siempre sobre un recordset (1 o N proyectos). La única
+  pieza genuinamente asimétrica es el **write-back**: en evaluación solo
+  se persiste el proyecto activo; en progreso se persiste todo el
+  recordset combinado.
+- Bug real encontrado y corregido durante la implementación: no se puede
+  reusar el `insight.scenario` del proyecto activo para persistir filas
+  de otro proyecto combinado — `insight.task.schedule` exige que
+  `scenario_id.project_id == task_id.project_id`. Cada proyecto "en
+  progreso" incluido en la corrida persiste contra su PROPIO escenario
+  baseline, no el del proyecto activo.
+- Segundo bug encontrado (vía la suite de tests, no por inspección): el
+  `default=` de `max()` en Python se evalúa siempre, no perezosamente —
+  `_tjp_project_header` llamaba un método `ensure_one()` sobre el
+  recordset combinado completo dentro de ese `default`, rompiendo con
+  "Expected singleton" en cualquier corrida de 2+ proyectos.
+- `_tjp_scenario_id` se calificó con el id del proyecto dueño del
+  escenario (antes derivaba solo del nombre) — dos proyectos con un
+  escenario "Default" cada uno colisionaban al combinarse.
+- El diseño original preveía un `message_post` de impacto cruzado en el
+  chatter; se descartó a pedido del usuario a favor de un reporte
+  estructurado versionado como `knowledge.asset`
+  (`_tj_generate_evaluation_impact_report`), mismo patrón que los
+  reportes de costo (`_get_or_create_cost_asset`/
+  `_compute_and_save_cost_reports`) — delta de fecha por tarea/hito raíz,
+  usuarios afectados, conteo de recursos antes/después. Solo se genera
+  si hay un cambio real que reportar (evita ruido).
+- Se agregó un 4to estado, "Finalizado" (`done`), y botones de transición
+  de estado en el header del form (ver CHANGELOG de `project_improve`,
+  que es donde vive el campo `state`) — se discutió un botón "Reabrir"
+  desde Finalizado y se descartó a favor de la idea de "Clonar proyecto"
+  con calibración histórica de esfuerzo (ver
+  `insight_project/BACKLOG.md` ítem 8, memoria
+  `project_clone_template_design`, no implementado todavía).
+
+### Agregado
+
+- `_tj_portfolio_recordset()`: recordset a combinar en una corrida =
+  todos los proyectos `state='progress'` + el proyecto activo, sin
+  importar su propio estado.
+- `_cron_run_portfolio_schedule()` + `ir_cron_run_portfolio_schedule`
+  (`data/insight_cron.xml`): recalcula diariamente todos los proyectos
+  "en progreso" juntos.
+- `_parse_scenario_csv_preview()`: parsea la respuesta de TJ3 sin
+  persistir, usada para los proyectos combinados que no se tocan en modo
+  evaluación (comparte parsing con `_import_scenario_csv` vía el nuevo
+  helper `_parse_tj_schedule_csv`).
+- `_tj_generate_evaluation_impact_report()` / `_tj_project_impact_summary()`
+  / `_get_or_create_evaluation_impact_asset()`: reporte de impacto
+  versionado como `knowledge.asset` (categoría
+  `insight_project.evaluation_impact_report`) cuando la evaluación de un
+  proyecto afecta a proyectos "en progreso".
+- `tests/test_portfolio_scheduling.py`: recordset combinado, dedup de
+  recursos compartidos en el `.tjp`, calificación de escenarios por
+  proyecto, gateo de persistencia (evaluación vs. progreso), y el
+  reporte de impacto.
+
+### Cambiado
+
+- `_generate_tjp(active_project=None)` / `_tj_project_users()` /
+  `_tjp_project_header(..., active_project=None)`: multi-proyecto, sin
+  caso especial para un solo proyecto. `active_project` determina la
+  jerarquía de escenarios TJ3 y el header/etiqueta del archivo; el
+  `start`/`end` del bloque `project` cubre a todos los proyectos
+  combinados. `_tjp_task_block`/`_tjp_milestone_block`/dependencias FF
+  dejan de comparar `project_id == self` (rompía con un recordset
+  multi-proyecto) y comparan contra el proyecto dueño de cada tarea.
+- `_import_all_schedules(csv_files, active_project=None)`: write-back
+  asimétrico (ver discusión de diseño arriba).
+- `action_run_schedule`: arma el recordset combinado, genera el `.tjp`
+  sobre él, pero sigue llamando a `_call_tj_microservice` sobre `self`
+  (el proyecto que disparó la corrida) para no spamear el chatter de
+  proyectos ajenos ante un error.
+
+### Validación
+
+- `make test-local MODULE=insight_project` (DB de sesión aislada,
+  clonada de `test_template` — no toca la DB compartida `fop`):
+  199/199 tests, 0 fallos, 0 errores.
+
+---
+
 ## [17.0.9.7.4] - 2026-07-13
 
 ### Prompt

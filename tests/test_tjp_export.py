@@ -72,9 +72,11 @@ class TestTjpProjectHeader(TransactionCase):
         self.env['insight.scenario'].create({'name': 'Withia', 'project_id': self.project.id})
 
         text = '\n'.join(self.project._tjp_project_header(self.project.scenario_ids))
-        self.assertIn('scenario plan "Plan" {', text)
-        self.assertIn('    scenario noai "Noai"', text)
-        self.assertIn('    scenario withia "Withia"', text)
+        plan_id = self.project._tjp_scenario_id(plan)
+        self.assertIn(f'scenario {plan_id} "Plan" {{', text)
+        for sc in self.project.scenario_ids.filtered(lambda s: s.name != 'Plan'):
+            sc_id = self.project._tjp_scenario_id(sc)
+            self.assertIn(f'    scenario {sc_id} "{sc.name}"', text)
         plan.unlink()
         self.project.scenario_ids.unlink()
 
@@ -796,10 +798,12 @@ class TestTjpTaskBlock(TransactionCase):
         noai = self.env['insight.scenario'].create({'name': 'Noai', 'project_id': self.project.id})
         lines = self.project._tjp_reports(plan | noai)
         text = '\n'.join(lines)
-        self.assertIn('taskreport "schedule_plan" {', text)
-        self.assertIn('  scenarios plan', text)
-        self.assertIn('taskreport "schedule_noai" {', text)
-        self.assertIn('  scenarios noai', text)
+        plan_id = self.project._tjp_scenario_id(plan)
+        noai_id = self.project._tjp_scenario_id(noai)
+        self.assertIn(f'taskreport "schedule_{plan_id}" {{', text)
+        self.assertIn(f'  scenarios {plan_id}', text)
+        self.assertIn(f'taskreport "schedule_{noai_id}" {{', text)
+        self.assertIn(f'  scenarios {noai_id}', text)
 
 
 class TestTjpBookings(TransactionCase):
@@ -1036,7 +1040,7 @@ class TestGenerateTjpEndToEnd(TransactionCase):
             'email': 'full_plan_resource@insight.test',
             'groups_id': [(4, cls.env.ref('base.group_user').id)],
         })
-        cls.env['insight.scenario'].create(
+        cls.scenario = cls.env['insight.scenario'].create(
             {'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True})
         root = cls.env['project.task'].create({
             'name': 'Eje', 'project_id': cls.project.id, 'user_ids': [(6, 0, [])],
@@ -1055,7 +1059,8 @@ class TestGenerateTjpEndToEnd(TransactionCase):
         self.assertIn(f'project p{self.project.id} "Full Plan"', tjp)
         self.assertIn(f'resource u{self.user.id} "Full Plan Resource"', tjp)
         self.assertIn('task t', tjp)
-        self.assertIn('taskreport "schedule_plan"', tjp)
+        sc_id = self.project._tjp_scenario_id(self.scenario)
+        self.assertIn(f'taskreport "schedule_{sc_id}"', tjp)
 
 
 class TestActionExportTjp(TransactionCase):
