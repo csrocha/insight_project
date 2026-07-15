@@ -990,8 +990,8 @@ class ProjectProject(models.Model):
         self.ensure_one()
         if self.schedule_dirty:
             raise UserError(_(
-                'El schedule está desactualizado. Ejecute "Ejecutar '
-                'Schedule" antes de generar reportes de costos.'
+                'El schedule está desactualizado. Ejecute "Replanificar" '
+                'antes de actualizar los reportes.'
             ))
         root_task_ids = set(self.task_ids.filtered(lambda t: not t.parent_id).ids)
         leaf_ids = self._tjp_leaf_task_ids()
@@ -1103,6 +1103,7 @@ class ProjectProject(models.Model):
                 'title': _('Reportes de costos generados'),
                 'type': 'success',
                 'sticky': False,
+                'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'},
             },
         }
 
@@ -1741,7 +1742,7 @@ class ProjectProject(models.Model):
                 ' font-family="Arial, sans-serif">'
                 '<rect width="640" height="90" fill="#fafafa"/>'
                 '<text x="32" y="50" font-size="13" fill="#757575">'
-                'No hay datos de schedule. Ejecute "Ejecutar Schedule" primero.</text>'
+                'No hay datos de schedule. Ejecute "Replanificar" primero.</text>'
                 '</svg>'
             )
 

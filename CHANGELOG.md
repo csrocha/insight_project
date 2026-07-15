@@ -9,6 +9,102 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.7] - 2026-07-15
+
+### Prompt
+
+> "Algunos cambios estéticos: El budget de status moverlo del header al
+> formulario..." / "Otro cambio estético, que los botones de importar
+> TJP, Resheduling y Exportar TJP esté en el header y no dentro de
+> Scheduler. Quitar el generar reportes de costos que ya no se usa más
+> (confirmame en el código, que es lo mismo que resheduling)" →
+> confirmado que NO es lo mismo (no vuelve a correr TJ3, solo lee
+> `insight.task.schedule` ya persistido) → "Cambialo de lugar, pasalo a
+> la pestaña 'Reportes'. Y que sea actualizar reportes." / "Unifica
+> botón de Rescheduler. Me gusta el que tiene el ícono de la ruedita y
+> dice Replanificar." / "Cuando termina actualizar reportes no actualiza
+> la pantalla, y no se ven los reportes generados." / "Ojo! El botón de
+> importar siempre tiene que estar visible si está en modo draft" /
+> "No! [...] Por favor, habilitalo incluso [siempre visible]."
+
+### Discusión de diseño
+
+- Los botones `Ejecutar Schedule`/`Exportar TJP`/`Importar TJP...` vivían
+  dentro de la pestaña "Scheduler" del notebook; se movieron al header
+  del formulario (`xpath expr="//header"`), mismo lugar donde
+  `project_improve` ya tenía los botones de workflow de `state`.
+  `Ver Gantt` se dejó donde estaba (no se pidió moverlo).
+- Se investigó si "Generar reportes de costos" es redundante con el
+  rescheduling ("Replanificar") antes de tocarlo: confirmado en código
+  que **no lo es** — `_compute_and_save_cost_reports` /
+  `_tj_cost_by_phase_and_skill` calculan todo en Python puro sobre
+  `scenario.schedule_ids` (el `insight.task.schedule` que dejó importado
+  la última corrida de "Replanificar"), sin llamar nunca a
+  `_call_tj_microservice`; de hecho valida `schedule_dirty` y tira
+  `UserError` pidiendo replanificar primero si está desactualizado. Son
+  dos pasos secuenciales, no duplicados. Se renombró a "Actualizar
+  reportes" y se movió de la pestaña "Scheduler" a su propia pestaña
+  "Reportes" (`insight_reports`), junto a la lista `report_asset_ids`
+  que ya vivía ahí.
+- Botón de reschedule unificado con el que ya existía en el header/
+  kanban/tree de `project.task` (`action_reschedule_project`, que solo
+  resuelve el proyecto contenedor y delega en `action_run_schedule()`):
+  mismo label "Replanificar" + ícono `fa-refresh` en los dos lugares.
+  Se actualizaron también los dos textos user-facing que todavía
+  mencionaban el nombre viejo del botón ("Ejecutar Schedule"): el SVG
+  placeholder del Gantt sin datos y el `UserError` de
+  `_tj_cost_by_phase_and_skill` cuando el schedule está sucio.
+- Bug encontrado al actualizar reportes: `_compute_and_save_cost_reports`
+  devolvía solo un `display_notification`, que **no recarga el
+  formulario** — `report_asset_ids` (computado, no-stored) quedaba con
+  el valor viejo hasta refrescar la página a mano. Fix: se agregó
+  `'next': {'type': 'ir.actions.client', 'tag': 'soft_reload'}` dentro
+  de los `params` de la notificación (patrón estándar del web client:
+  muestra el mensaje y después recarga el registro actual sin salir de
+  la pantalla). Beneficia tanto al botón del proyecto como al
+  equivalente en `insight.scenario`, porque ambos comparten la función.
+- El botón "Importar TJP..." pasó por dos iteraciones de visibilidad:
+  primero `invisible="is_tj_enabled"` (solo si TJ3 no está habilitado),
+  después `invisible="is_tj_enabled and state != 'draft'"` (también
+  visible en `draft` aunque ya esté habilitado), y finalmente sin
+  `invisible` — siempre visible. Se confirmó que
+  `action_open_import_wizard` no tiene ninguna validación server-side
+  que dependa de `is_tj_enabled` (solo abre el wizard, que al importar
+  vuelve a setear `is_tj_enabled=True`, operación idempotente), así que
+  no hay riesgo funcional en dejarlo siempre disponible.
+- De una sesión previa sin commitear (no motivada por el prompt de esta
+  entrada, pero parte del mismo diff a shippear): reimportar un `.tjp`
+  borra todas las tareas/milestones existentes del proyecto — `'draft'`
+  por sí solo no garantiza que no haya horas imputadas (nada impide
+  cargar timesheets en un proyecto en borrador). Se agregó
+  `_check_no_timesheets_logged` en `insight.import.wizard`, que valida
+  *antes* de intentar el `unlink` y tira un `UserError` propio con las
+  tareas afectadas, en vez de dejar que lo rechace a mitad de camino el
+  guard nativo de `hr_timesheet`
+  (`_unlink_except_contains_entries`) con un mensaje que no dice nada de
+  reimportar.
+
+### Cambiado
+
+- `views/project_project_views.xml`: botones de header reordenados
+  (Replanificar → Exportar TJP → Importar TJP, siempre visible este
+  último); "Actualizar reportes" movido a la pestaña "Reportes".
+- `models/project_project.py`: `'next': soft_reload` en la notificación
+  de `_compute_and_save_cost_reports`; textos user-facing actualizados
+  a "Replanificar"/"actualizar los reportes".
+- `models/insight_import_wizard.py` /
+  `tests/test_import_wizard.py`: `_check_no_timesheets_logged` +
+  test `test_reimport_blocked_when_a_task_has_logged_timesheets`.
+
+### Validación
+
+- Pendiente `-u insight_project` + prueba manual en el navegador para
+  los cambios de vista/header. Los tests de `test_import_wizard.py`
+  cubren `_check_no_timesheets_logged` (no se corrió la suite completa
+  en esta sesión antes de shippear).
+
+---
+
 ## [17.0.9.7.6] - 2026-07-14
 
 ### Prompt

@@ -179,6 +179,42 @@ class TestImportWizardAction(TransactionCase):
             wizard.action_import()
         self.assertFalse(self.env['project.task'].search([('project_id', '=', project.id)]))
 
+    def test_reimport_blocked_when_a_task_has_logged_timesheets(self):
+        """'draft' no garantiza que no haya horas imputadas — reimportar
+        borraría esa tarea y Odoo lo rechazaría a mitad de camino
+        (hr_timesheet._unlink_except_contains_entries). Se valida antes,
+        con un mensaje propio, y no se toca nada del proyecto."""
+        project = self.env['project.project'].create({
+            'name': 'Reimport With Timesheets Project', 'state': 'draft',
+        })
+        analytic_plan = self.env['account.analytic.plan'].create({'name': 'Reimport Test Plan'})
+        analytic_account = self.env['account.analytic.account'].create({
+            'name': 'Reimport Test Analytic', 'plan_id': analytic_plan.id,
+        })
+        project.analytic_account_id = analytic_account.id
+        existing_task = self.env['project.task'].create({
+            'name': 'Tarea con horas', 'project_id': project.id,
+        })
+        employee = self.env['hr.employee'].create({'name': 'Reimport Test Employee'})
+        self.env['account.analytic.line'].create({
+            'name': '/', 'account_id': analytic_account.id,
+            'task_id': existing_task.id, 'employee_id': employee.id,
+            'date': '2026-07-01', 'unit_amount': 2.0,
+        })
+
+        wizard = self.env['insight.import.wizard'].create({
+            'project_id': project.id,
+            'state': 'mapping',
+            'parsed_tasks_json': json.dumps([self._node('t1', 'Nueva Tarea')]),
+        })
+        with self.assertRaises(UserError):
+            wizard.action_import()
+
+        self.assertTrue(existing_task.exists(), 'La tarea con horas imputadas no debe tocarse')
+        self.assertFalse(self.env['project.task'].search([
+            ('project_id', '=', project.id), ('name', '=', 'Nueva Tarea'),
+        ]), 'No debe haberse creado nada del import fallido')
+
     def test_reimport_replaces_previous_tasks_and_milestones(self):
         project = self.env['project.project'].create({
             'name': 'Reimport Project', 'state': 'draft',

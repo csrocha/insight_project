@@ -74,11 +74,15 @@ class InsightImportWizard(models.TransientModel):
 
     def _check_draft_state(self):
         """Importar (y reimportar) reemplaza todas las tareas/milestones
-        existentes del proyecto — solo tiene sentido, y solo es seguro,
-        mientras el proyecto está en 'draft' (project_improve): ahí todavía
-        se está presupuestando, sin timesheets ni schedule comprometido de
-        por medio. En 'evaluación'/'progreso'/'finalizado' se bloquea para
-        no arriesgar borrar trabajo real."""
+        existentes del proyecto — solo tiene sentido, y solo debería ser
+        seguro, mientras el proyecto está en 'draft' (project_improve): ahí
+        todavía se está presupuestando. En 'evaluación'/'progreso'/
+        'finalizado' se bloquea para no arriesgar borrar trabajo real.
+
+        'draft' por sí solo NO garantiza que no haya horas imputadas —
+        nada impide cargar timesheets en un proyecto que sigue en
+        borrador — así que se valida aparte (ver
+        _check_no_timesheets_logged)."""
         self.ensure_one()
         if self.project_id.state != 'draft':
             raise UserError(_(
@@ -90,6 +94,28 @@ class InsightImportWizard(models.TransientModel):
                 'state': dict(self.project_id._fields['state'].selection)[self.project_id.state],
             })
 
+    def _check_no_timesheets_logged(self):
+        """Reimportar borra todas las tareas existentes del proyecto
+        (ver action_import) — si alguna tiene horas imputadas
+        (account.analytic.line), Odoo va a rechazar ese unlink con su
+        propio guard nativo (hr_timesheet._unlink_except_contains_entries),
+        mid-operación y con un mensaje que no dice nada de reimportar.
+        Se valida acá antes, con un mensaje específico a este flujo."""
+        self.ensure_one()
+        project = self.project_id
+        tasks_with_hours = self.env['account.analytic.line'].sudo().search([
+            ('task_id.project_id', '=', project.id),
+        ]).task_id
+        if tasks_with_hours:
+            raise UserError(_(
+                'No se puede reimportar "%(project)s": las siguientes tareas '
+                'tienen horas imputadas y Odoo no permite borrarlas sin '
+                'borrar antes esos registros: %(tasks)s.'
+            ) % {
+                'project': project.name,
+                'tasks': ', '.join(tasks_with_hours.mapped('name')),
+            })
+
     # -------------------------------------------------------------------------
     # Step 1: Upload & Analyze
     # -------------------------------------------------------------------------
@@ -99,6 +125,7 @@ class InsightImportWizard(models.TransientModel):
         if not self.tjp_file:
             raise UserError(_('Seleccione un archivo TJP antes de continuar.'))
         self._check_draft_state()
+        self._check_no_timesheets_logged()
 
         ICP = self.env['ir.config_parameter'].sudo()
         url = ICP.get_param('insight_project.tj_microservice_url')
@@ -309,6 +336,7 @@ class InsightImportWizard(models.TransientModel):
     def action_import(self):
         self.ensure_one()
         self._check_draft_state()
+        self._check_no_timesheets_logged()
         tasks = json.loads(self.parsed_tasks_json or '[]')
         csv_files = json.loads(self.csv_files_json or '{}')
         project = self.project_id
