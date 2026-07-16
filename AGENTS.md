@@ -25,6 +25,6 @@ ver el [AGENTS.md de fop_odoo_theme](https://github.com/observatoriopyme/fop_odo
 ## Actualizacion de CHANGELOG (obligatorio)
 
 **Antes de cada commit**, agregar una entrada en `CHANGELOG.md` siguiendo el
-formato y las reglas definidas en la **Sección 17 del AGENTS.md raíz** de `fop-odoo`.
+formato y las reglas definidas en la **Sección 10 del AGENTS.md raíz** de `fop-odoo`.
 
 No es un checkbox opcional: sin entrada en CHANGELOG no se completa el commit.
