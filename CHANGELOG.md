@@ -9,6 +9,85 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.8] - 2026-07-16
+
+### Prompt
+
+> (Cambios ya presentes en el working tree al iniciar esta sesión de
+> `/ship`, reconstruidos a partir del diff — no se dispone del prompt
+> original que los motivó.) Migrar el Gantt del proyecto del controller
+> HTTP ad-hoc (`/insight_project/gantt/<id>`, SVG generado en vivo en cada
+> request) al mismo patrón ya usado por los reportes de costo:
+> `knowledge.asset` persistido + `ir.actions.report`/QWeb.
+
+### Discusión de diseño
+
+- El Gantt vivía como un `http.Controller` propio que llamaba
+  `project._render_gantt_svg()` en cada request, sin persistir nada; los
+  reportes de costo ya habían migrado antes (v17.0.9.7.2) a
+  `knowledge.asset` + `ir.actions.report`. Se aplicó el mismo patrón acá
+  para que ambos reportes compartan mecanismo de generación, versionado y
+  visualización — `controllers/` quedó vacío y se eliminó junto con su
+  `from . import controllers`.
+- Se separó el payload (JSON: tareas, milestones, dependencias — ver
+  `project.project._tj_gantt_schedule_payload`) del renderer puro
+  (`report_gantt_report.render_gantt_svg`, sin acceso a ORM, testeable con
+  un dict a mano). El renderer es un solo asset por **proyecto**, no por
+  escenario como los reportes de costo, porque el Gantt siempre superpuso
+  todos los escenarios en un mismo gráfico.
+- `insight.scenario.action_generate_cost_reports` ("Actualizar reportes")
+  ahora también regenera el Gantt del proyecto en el mismo disparo, para
+  que un solo botón deje ambos reportes al día sin importar desde qué
+  escenario se lo invoque.
+- Aprovechando la migración a un SVG persistido (ya no generado por
+  request), se sumó interactividad que el controller viejo no tenía:
+  leyenda de escenarios clickeable (`gantt-legend-item`) que oculta/muestra
+  sus barras y flechas de dependencia sin regenerar el reporte, y el
+  dibujo de las flechas de dependencia entre tareas (conector en escuadra
+  o en "S" según haya espacio entre el fin de la tarea bloqueante y el
+  inicio de la dependiente).
+- El `<script>` embebido busca su propio `<svg>` por `id` (hash
+  determinístico del payload) en vez de `document.currentScript`: ese
+  mecanismo es del modelo de scripts de HTML y no está garantizado para un
+  `<script>` dentro de un `<svg>` — de fallar, el script aborta sin
+  conectar ningún listener y sin pisar otros Gantt embebidos en la misma
+  página de reporte.
+
+### Añadido
+
+- `models/report_gantt_report.py`: renderer puro `render_gantt_svg(payload)`
+  + modelo abstracto `report.insight_project.report_gantt_report_svg` que
+  alimenta el QWeb.
+- `report/report_gantt_report_actions.xml`, `report/report_gantt_report_templates.xml`:
+  `ir.actions.report` + template QWeb del Gantt, análogos a los ya
+  existentes para el reporte de costo.
+- `models/project_project.py`: `_tj_gantt_schedule_payload`,
+  `_get_or_create_gantt_asset`, `_compute_and_save_gantt_report`.
+
+### Cambiado
+
+- `models/project_project.py`: `action_view_gantt` deja de devolver una
+  `ir.actions.act_url` al controller propio y ahora abre el
+  `knowledge.asset` de categoría `insight_project.gantt_report` vía
+  `action_open_category_report()`; `_compute_report_asset_ids` incluye
+  también los assets de Gantt (por proyecto), no solo los de costo (por
+  escenario).
+- `models/insight_scenario.py`: `action_generate_cost_reports` regenera
+  también el Gantt del proyecto.
+- `tests/test_gantt.py`: reescrito para cubrir el payload, la persistencia
+  del asset, el renderer puro (incluyendo toggle de leyenda y flechas de
+  dependencia) y el `report.*` model.
+
+### Eliminado
+
+- `controllers/main.py` (y el `from . import controllers` de `__init__.py`):
+  la ruta `/insight_project/gantt/<id>` queda reemplazada por el reporte
+  QWeb/`ir.actions.report`.
+- `models/project_project.py`: `_render_gantt_svg` (renderer SVG en vivo),
+  reemplazado por `report_gantt_report.render_gantt_svg` sobre el payload
+  persistido.
+
+
 ## [17.0.9.7.7] - 2026-07-15
 
 ### Prompt

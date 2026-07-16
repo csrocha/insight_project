@@ -338,11 +338,16 @@ class ProjectProject(models.Model):
         self.ensure_one()
         if not self.last_scheduled:
             raise UserError(_('Ejecute el schedule primero para generar el Gantt.'))
-        return {
-            'type': 'ir.actions.act_url',
-            'url': f'/insight_project/gantt/{self.id}',
-            'target': 'new',
-        }
+        asset = self.env['knowledge.asset'].search([
+            ('res_model', '=', 'project.project'),
+            ('res_id', '=', self.id),
+            ('category', '=', self._TJP_GANTT_REPORT_CATEGORY),
+        ], limit=1)
+        if not asset or not asset.current_version_id:
+            raise UserError(_(
+                'No hay un reporte Gantt generado. Use "Actualizar reportes" primero.'
+            ))
+        return asset.action_open_category_report()
 
     def action_open_import_wizard(self):
         self.ensure_one()
@@ -1123,10 +1128,107 @@ class ProjectProject(models.Model):
         Asset = self.env['knowledge.asset']
         for project in self:
             project.report_asset_ids = Asset.search([
-                ('res_model', '=', 'insight.scenario'),
-                ('res_id', 'in', project.scenario_ids.ids),
-                ('category', '=', self._TJP_COST_REPORT_CATEGORY),
+                '&', ('category', 'in', [
+                    self._TJP_COST_REPORT_CATEGORY, self._TJP_GANTT_REPORT_CATEGORY,
+                ]),
+                '|',
+                '&', ('res_model', '=', 'insight.scenario'), ('res_id', 'in', project.scenario_ids.ids),
+                '&', ('res_model', '=', 'project.project'), ('res_id', '=', project.id),
             ])
+
+    # ── Reporte de Gantt (knowledge.asset) ───────────────────────────────────
+    #
+    # Un asset por proyecto (no por escenario, a diferencia de los reportes de
+    # costo): el Gantt siempre superpuso todos los escenarios del proyecto en
+    # un mismo gráfico (leyenda de colores por escenario), así que el payload
+    # también agrega todos juntos. Se regenera cuando se pide "Actualizar
+    # reportes" (ver insight.scenario.action_generate_cost_reports), no en
+    # cada visualización.
+
+    _TJP_GANTT_REPORT_CATEGORY = 'insight_project.gantt_report'
+
+    def _tj_gantt_schedule_payload(self):
+        """Ensambla el payload JSON del Gantt: tareas planificadas
+        (insight.task.schedule), milestones y dependencias. Es la mitad
+        ORM de lo que antes hacía _render_gantt_svg en un solo método — la
+        otra mitad (dibujo del SVG) vive ahora en
+        report_gantt_report.render_gantt_svg, que consume este payload en
+        vez de volver a consultar el ORM."""
+        self.ensure_one()
+        schedules = self.env['insight.task.schedule'].search(
+            [('task_id.project_id', '=', self.id)],
+        ).filtered(lambda s: s.start_scheduled and s.end_scheduled)
+
+        seen_sc = {}
+        for s in schedules:
+            seen_sc.setdefault(s.scenario_id.id, s.scenario_id)
+        scenarios = list(seen_sc.values())
+
+        tasks = [{
+            'task_id': s.task_id.id,
+            'bsi': s.bsi or '?',
+            'name': s.task_id.name,
+            'parent_id': s.task_id.parent_id.id or None,
+            'scenario_id': s.scenario_id.id,
+            'start': fields.Datetime.to_string(s.start_scheduled),
+            'end': fields.Datetime.to_string(s.end_scheduled),
+            'complete': s.complete,
+            'is_critical_path': s.is_critical_path,
+            'resources': s.resource_ids.mapped('name'),
+        } for s in schedules]
+
+        milestones = [{
+            'id': m.id,
+            'name': m.name,
+            'date': fields.Date.to_string(m.tj_scheduled_date or m.deadline) or None,
+            'is_reached': m.is_reached,
+            'task_ids': m.task_ids.ids,
+        } for m in self.milestone_ids]
+
+        project_tasks = self.env['project.task'].search([('project_id', '=', self.id)])
+        dependencies = [{
+            'task_id': task.id,
+            'depends_on_id': dep.id,
+            'type': task._tj_dependency_type_for(dep),
+        } for task in project_tasks for dep in task.depend_on_ids]
+
+        return {
+            'title': self.name,
+            'last_scheduled': fields.Datetime.to_string(self.last_scheduled) or None,
+            'generated_at': fields.Datetime.to_string(fields.Datetime.now()),
+            'scenarios': [{'id': sc.id, 'name': sc.name} for sc in scenarios],
+            'tasks': tasks,
+            'milestones': milestones,
+            'dependencies': dependencies,
+        }
+
+    def _get_or_create_gantt_asset(self):
+        self.ensure_one()
+        Asset = self.env['knowledge.asset']
+        asset = Asset.search([
+            ('res_model', '=', 'project.project'),
+            ('res_id', '=', self.id),
+            ('category', '=', self._TJP_GANTT_REPORT_CATEGORY),
+        ], limit=1)
+        if asset:
+            return asset
+        manager_group = self.env.ref('project.group_project_manager', raise_if_not_found=False)
+        return Asset.create({
+            'name': _('Gantt — %s') % self.name,
+            'res_model': 'project.project',
+            'res_id': self.id,
+            'category': self._TJP_GANTT_REPORT_CATEGORY,
+            'tags': 'gantt',
+            'visibility': 'shared',
+            'shared_group_ids': [(6, 0, manager_group.ids)] if manager_group else False,
+        })
+
+    def _compute_and_save_gantt_report(self):
+        self.ensure_one()
+        asset = self._get_or_create_gantt_asset()
+        payload = self._tj_gantt_schedule_payload()
+        asset.create_version(payload, schema='insight_project.gantt', schema_version='1.0')
+        return asset
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1716,188 +1818,3 @@ class ProjectProject(models.Model):
             return []
         return [int(m) for m in re.findall(r'\(u(\d+)\)', value)]
 
-    # ── Gantt SVG renderer ────────────────────────────────────────────────────
-
-    def _render_gantt_svg(self):
-        """Generate a plain SVG Gantt from insight.task.schedule records."""
-        import calendar
-
-        def _esc(s):
-            return (str(s)
-                    .replace('&', '&amp;')
-                    .replace('<', '&lt;')
-                    .replace('>', '&gt;')
-                    .replace('"', '&quot;'))
-
-        def _bsi_key(bsi):
-            return [int(p) if p.isdigit() else p for p in (bsi or '0').split('.')]
-
-        schedules = self.env['insight.task.schedule'].search(
-            [('task_id.project_id', '=', self.id)],
-        ).filtered(lambda s: s.start_scheduled and s.end_scheduled)
-
-        if not schedules:
-            return (
-                '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="90"'
-                ' font-family="Arial, sans-serif">'
-                '<rect width="640" height="90" fill="#fafafa"/>'
-                '<text x="32" y="50" font-size="13" fill="#757575">'
-                'No hay datos de schedule. Ejecute "Replanificar" primero.</text>'
-                '</svg>'
-            )
-
-        # Collect scenarios preserving first-seen order
-        seen_sc = {}
-        for s in schedules:
-            seen_sc.setdefault(s.scenario_id.id, s.scenario_id)
-        scenarios = list(seen_sc.values())
-
-        BAR_NORMAL   = ['#43A047', '#1E88E5', '#FB8C00', '#8E24AA', '#00ACC1']
-        BAR_CRITICAL = ['#C62828', '#1565C0', '#E65100', '#6A1B9A', '#00695C']
-        sc_color = {
-            sc.id: (BAR_NORMAL[i % 5], BAR_CRITICAL[i % 5])
-            for i, sc in enumerate(scenarios)
-        }
-
-        min_dt = min(s.start_scheduled for s in schedules)
-        max_dt = max(s.end_scheduled   for s in schedules)
-        span_secs = max((max_dt - min_dt).total_seconds(), 86400.0)
-
-        # Group by BSI in sorted order
-        groups = {}
-        for s in schedules:
-            groups.setdefault(s.bsi or '?', []).append(s)
-        ordered_bsis = sorted(groups.keys(), key=_bsi_key)
-
-        # Layout
-        LW, RW = 340, 1060
-        TW = LW + RW
-        RH = 26
-        HDR, LEG, AXIS = 56, 24, 24
-        TOP = HDR + LEG + AXIS
-
-        n_rows = sum(len(v) for v in groups.values())
-        TH = TOP + n_rows * RH + 16
-
-        def xp(dt):
-            return LW + (dt - min_dt).total_seconds() / span_secs * RW
-
-        o = []
-        o.append(
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{TW}" height="{TH}"'
-            f' font-family="Arial, Helvetica, sans-serif" font-size="11">'
-        )
-        o.append(f'<rect width="{TW}" height="{TH}" fill="#ffffff"/>')
-
-        # Title + subtitle
-        o.append(
-            f'<text x="10" y="22" font-size="15" font-weight="bold" fill="#212121">'
-            f'{_esc(self.name or "Proyecto")}</text>'
-        )
-        if self.last_scheduled:
-            o.append(
-                f'<text x="10" y="40" font-size="10" fill="#9E9E9E">'
-                f'Último schedule: {self.last_scheduled.strftime("%Y-%m-%d %H:%M")} UTC</text>'
-            )
-
-        # Scenario legend
-        xl, yl = 10, HDR + 16
-        for sc in scenarios:
-            cn, _ = sc_color[sc.id]
-            o.append(f'<rect x="{xl}" y="{yl-11}" width="13" height="13" fill="{cn}" rx="2"/>')
-            o.append(f'<text x="{xl+17}" y="{yl}" fill="#424242">{_esc(sc.name)}</text>')
-            xl += 20 + len(sc.name) * 7
-        o.append(
-            f'<text x="{xl+6}" y="{yl}" fill="#C62828" font-weight="bold">⚡ camino crítico</text>'
-        )
-
-        # Left / right divider
-        o.append(
-            f'<line x1="{LW}" y1="{HDR}" x2="{LW}" y2="{TH}"'
-            f' stroke="#BDBDBD" stroke-width="1"/>'
-        )
-
-        # Month grid lines + labels
-        ms = datetime(min_dt.year, min_dt.month, 1)
-        while ms <= max_dt:
-            if ms >= min_dt:
-                mx = xp(ms)
-                o.append(
-                    f'<line x1="{mx:.1f}" y1="{TOP}" x2="{mx:.1f}" y2="{TH}"'
-                    f' stroke="#F0F0F0" stroke-width="1"/>'
-                )
-                o.append(
-                    f'<text x="{mx+3:.1f}" y="{HDR+LEG+17}"'
-                    f' fill="#9E9E9E" font-size="10">'
-                    f'{calendar.month_abbr[ms.month]} {ms.year}</text>'
-                )
-            ms = datetime(ms.year + (ms.month == 12), ms.month % 12 + 1, 1)
-
-        # "Today" marker (UTC)
-        now_utc = datetime.utcnow()
-        if min_dt <= now_utc <= max_dt:
-            nx = xp(now_utc)
-            o.append(
-                f'<line x1="{nx:.1f}" y1="{TOP}" x2="{nx:.1f}" y2="{TH}"'
-                f' stroke="#E53935" stroke-width="1.5"'
-                f' stroke-dasharray="5,3" opacity="0.7"/>'
-            )
-            o.append(
-                f'<text x="{nx+2:.1f}" y="{HDR+LEG+17}"'
-                f' fill="#E53935" font-size="9" font-weight="bold">Hoy</text>'
-            )
-
-        # Task rows
-        yc = TOP
-        for bsi in ordered_bsis:
-            rows = groups[bsi]
-            task = rows[0].task_id
-            indent = bsi.count('.') * 12
-
-            for ridx, sched in enumerate(rows):
-                bg = '#FAFAFA' if (yc // RH) % 2 == 0 else '#FFFFFF'
-                o.append(f'<rect x="0" y="{yc}" width="{TW}" height="{RH}" fill="{bg}"/>')
-
-                if ridx == 0:
-                    weight = 'bold' if not task.parent_id else 'normal'
-                    label = _esc((task.name or '')[:44])
-                    o.append(
-                        f'<text x="{8+indent}" y="{yc+17}" fill="#424242">'
-                        f'<tspan font-size="10" fill="#9E9E9E">{_esc(bsi)} </tspan>'
-                        f'<tspan font-weight="{weight}">{label}</tspan></text>'
-                    )
-
-                x1 = xp(sched.start_scheduled)
-                x2 = xp(sched.end_scheduled)
-                bw = max(x2 - x1, 4.0)
-                cn, cc = sc_color[sched.scenario_id.id]
-                fill = cc if sched.is_critical_path else cn
-                stroke = ' stroke="#b71c1c" stroke-width="1.5"' if sched.is_critical_path else ''
-                o.append(
-                    f'<rect x="{x1:.1f}" y="{yc+5}" width="{bw:.1f}" height="{RH-10}"'
-                    f' fill="{fill}" rx="3" opacity="0.88"{stroke}/>'
-                )
-                if sched.complete > 0:
-                    # Franja de avance real (project.task.progress al momento
-                    # del export, ver _tjp_task_block) sobre el borde inferior
-                    # de la barra — no lo calcula TJ3, es solo visual.
-                    complete_w = bw * min(sched.complete, 100.0) / 100.0
-                    o.append(
-                        f'<rect x="{x1:.1f}" y="{yc+RH-8}" width="{complete_w:.1f}" height="3"'
-                        f' fill="#212121" opacity="0.55" rx="1.5"/>'
-                    )
-                if sched.is_critical_path:
-                    o.append(
-                        f'<text x="{x1+bw+2:.1f}" y="{yc+15}" font-size="10">⚡</text>'
-                    )
-                if len(scenarios) > 1 and bw > 50:
-                    o.append(
-                        f'<text x="{x1+4:.1f}" y="{yc+15}"'
-                        f' fill="white" font-size="9" font-weight="bold">'
-                        f'{_esc(sched.scenario_id.name[:9])}</text>'
-                    )
-
-                yc += RH
-
-        o.append('</svg>')
-        return '\n'.join(o)

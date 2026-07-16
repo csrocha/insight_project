@@ -151,9 +151,16 @@ class InsightScenario(models.Model):
     def action_generate_cost_reports(self):
         """El botón real vive acá (por escenario); project.project solo
         expone un wrapper de conveniencia que resuelve el baseline (ver
-        project.project.action_generate_cost_reports)."""
+        project.project.action_generate_cost_reports). Aprovecha el mismo
+        disparo para regenerar el reporte de Gantt del proyecto (no es por
+        escenario, agrega todos los escenarios del proyecto — ver
+        project.project._compute_and_save_gantt_report), así "Actualizar
+        reportes" siempre deja ambos reportes al día sin importar desde
+        qué escenario se lo dispare."""
         self.ensure_one()
-        return self.project_id._compute_and_save_cost_reports(self)
+        result = self.project_id._compute_and_save_cost_reports(self)
+        self.project_id._compute_and_save_gantt_report()
+        return result
 
 
 class InsightScenarioEfficiency(models.Model):

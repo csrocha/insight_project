@@ -21,7 +21,8 @@ class InsightTaskSchedule(models.Model):
              '"Completion" del taskreport) — no lo calcula TJ3, es un espejo '
              'de project.task.progress al momento del export; TJ3 no lo usa '
              'para nada del cálculo, solo se re-importa para pintarlo en el '
-             'Gantt propio (_render_gantt_svg).',
+             'reporte de Gantt propio (ver project.project.'
+             '_tj_gantt_schedule_payload / report_gantt_report.render_gantt_svg).',
     )
     resource_ids = fields.Many2many(
         'res.users', string='Recursos asignados',

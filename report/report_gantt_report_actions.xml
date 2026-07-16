@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_gantt_report_svg" model="ir.actions.report">
+        <field name="name">Gantt (SVG)</field>
+        <field name="model">knowledge.asset</field>
+        <field name="report_type">qweb-html</field>
+        <field name="report_name">insight_project.report_gantt_report_svg</field>
+        <field name="asset_category">insight_project.gantt_report</field>
+    </record>
+</odoo>
