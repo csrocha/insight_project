@@ -748,6 +748,83 @@ class ProjectProject(models.Model):
         value = max(1, min(self._TJP_HIGH_PRIORITY - 1, 500 + delta * self._TJP_PRIORITY_SCALE))
         return f'{ind}  priority {value}'
 
+    def _tj_task_risk_buffers(self, task):
+        """Hook de extensión (ver `insight_project_risk`, satélite todavía
+        no instalado por defecto): lista de `(etiqueta, días_de_buffer)` a
+        inyectar en el `.tjp` de esta tarea como margen de calendario por
+        riesgo. Vacío por defecto — cero cambio de comportamiento sin ese
+        módulo instalado."""
+        return []
+
+    def _tjp_leaf_body_lines(self, task, now_date, ind):
+        """Cuerpo interno (effort/allocate/booking, o duration si no hay
+        recurso asignado) de una tarea hoja con `allocated_hours > 0`.
+        Extraído de `_tjp_task_block` para poder reusarlo tanto inline (caso
+        de siempre, sin riesgos abiertos) como anidado dentro del wrapper
+        `_work` sintético que arma `_tjp_risk_buffer_wrapper_lines` cuando
+        la tarea sí tiene buffers de riesgo abiertos."""
+        lines = []
+        allocate_lines = self._tjp_allocate(task)
+        if allocate_lines:
+            effort_d = task.allocated_hours / 8.0
+            if effort_d < 0.125:
+                lines.append(f'{ind}effort {task.allocated_hours:.2f}h')
+            else:
+                lines.append(f'{ind}effort {effort_d:.2f}d')
+            for al in allocate_lines:
+                lines.append(f'{ind}{al}')
+            for bl in self._tjp_bookings(task, now_date):
+                lines.append(f'{ind}{bl}')
+        else:
+            # No resource assigned → use duration (TJ3 needs resource for effort)
+            duration_d = task.allocated_hours / 8.0
+            lines.append(f'{ind}duration {duration_d:.2f}d')
+        return lines
+
+    def _tjp_risk_buffer_wrapper_lines(self, task, now_date, ind, t_id, t_name, risk_buffers):
+        """Con al menos un riesgo abierto (ver `_tj_task_risk_buffers`), la
+        tarea deja de ser una hoja plana y pasa a ser un wrapper con un
+        hijo sintético `_work` (el trabajo real — effort/allocate/booking
+        sin ningún cambio) y un hijo sintético `_risk{n}` por buffer (pura
+        `duration` de calendario, sin `allocate` — no consume recurso ni
+        infla costo/horas, encadenados entre sí para que dos+ riesgos
+        abiertos sumen días en vez de solo tomar el mayor).
+
+        TJ3 rolea automáticamente fechas/costo de una tarea padre desde sus
+        hijos (mismo mecanismo ya usado por tareas reales con subtareas,
+        ver `_tjp_leaf_task_ids`) — por eso ninguna otra tarea necesita
+        cambiar su `depends`: quien ya dependía de `t_id` (vía
+        `_tjp_task_abs_path`) sigue apuntando ahí, solo que ahora `t_id` es
+        un padre cuyo fin real incluye el buffer. `_parse_task_id_from_tj_id`
+        ya ignora en silencio los ids sintéticos (`t5.t5_work` → intenta
+        `int('5_work')`, falla, devuelve None) — la única fila que
+        `insight.task.schedule` termina usando es la del padre (`t5`), ya
+        con las fechas empujadas.
+
+        Diseño confirmado empíricamente contra el binario real (tj3-ms
+        v3.8.4, 2026-07-17): un `.tjp` de prueba con este wrapper + una
+        tarea sucesora dependiendo del padre corrió la sucesora después del
+        buffer, no después del work solo."""
+        work_id = f'{t_id}_work'
+        lines = [f'{ind}  task {work_id} "{t_name}" {{']
+        lines += self._tjp_leaf_body_lines(task, now_date, ind + '    ')
+        lines.append(f'{ind}  }}')
+
+        # Encadenados (risk1 depende de work, risk2 de risk1, ...): cada
+        # riesgo abierto suma sus propios días de margen, en vez de que dos
+        # riesgos en paralelo terminen aportando solo el mayor de los dos.
+        predecessor_id = work_id
+        for i, (label, buffer_days) in enumerate(risk_buffers, start=1):
+            risk_id = f'{t_id}_risk{i}'
+            risk_name = f'Buffer riesgo: {label}'.replace('"', "'")
+            predecessor_path = '!' + self._tjp_task_abs_path(task, owner=task) + f'.{predecessor_id}'
+            lines.append(f'{ind}  task {risk_id} "{risk_name}" {{')
+            lines.append(f'{ind}    duration {buffer_days:.2f}d')
+            lines.append(f'{ind}    depends {predecessor_path}')
+            lines.append(f'{ind}  }}')
+            predecessor_id = risk_id
+        return lines
+
     def _tjp_task_block(self, task, depth=0, now_date=None):
         if now_date is None:
             now_date = self._tjp_now_date()
@@ -779,21 +856,11 @@ class ProjectProject(models.Model):
         if not child_tasks:
             # Leaf task: emit effort/duration and allocations
             if task.allocated_hours:
-                allocate_lines = self._tjp_allocate(task)
-                if allocate_lines:
-                    effort_d = task.allocated_hours / 8.0
-                    if effort_d < 0.125:
-                        lines.append(f'{ind}  effort {task.allocated_hours:.2f}h')
-                    else:
-                        lines.append(f'{ind}  effort {effort_d:.2f}d')
-                    for al in allocate_lines:
-                        lines.append(f'{ind}  {al}')
-                    for bl in self._tjp_bookings(task, now_date):
-                        lines.append(f'{ind}  {bl}')
+                risk_buffers = self._tj_task_risk_buffers(task)
+                if risk_buffers:
+                    lines += self._tjp_risk_buffer_wrapper_lines(task, now_date, ind, t_id, t_name, risk_buffers)
                 else:
-                    # No resource assigned → use duration (TJ3 needs resource for effort)
-                    duration_d = task.allocated_hours / 8.0
-                    lines.append(f'{ind}  duration {duration_d:.2f}d')
+                    lines += self._tjp_leaf_body_lines(task, now_date, ind + '  ')
 
         # Dependencies: FS (default) y SS mapean a `depends`/`depends {
         # onstart }` (ancla el INICIO de esta tarea). FF mapea a `precedes
@@ -1344,6 +1411,7 @@ class ProjectProject(models.Model):
 
         total_baseline_cost = baseline_payload.get('total_cost', 0.0)
         total_current_cost = self._tj_scenario_root_cost(scenario)
+        evm = self._tj_scenario_evm(scenario, baseline_by_task)
         payload = {
             'generated_at': fields.Datetime.to_string(fields.Datetime.now()),
             'frozen_at': baseline_payload.get('frozen_at'),
@@ -1352,11 +1420,56 @@ class ProjectProject(models.Model):
             'total_baseline_cost': total_baseline_cost,
             'total_current_cost': total_current_cost,
             'total_cost_delta': total_current_cost - total_baseline_cost,
+            **evm,
         }
         asset = self._get_or_create_deviation_asset(scenario)
         return asset.create_version(
             payload, schema='insight_project.deviation_report', schema_version='1.0',
         )
+
+    def _tj_scenario_evm(self, scenario, baseline_by_task):
+        """Earned Value Management (CPI/SPI) — puro costo/avance, no
+        necesita ingresos (a diferencia de "rentabilidad", que sí; ver
+        insight_project_sale). Reusa el mismo baseline congelado que el
+        resto del reporte de desviación: `planned_value` es cuánto
+        presupuesto DEBERÍA estar consumido a hoy según el plan (costo
+        baseline de tareas raíz cuyo fin pactado ya pasó); `earned_value` es
+        cuánto se "ganó" según avance real (`complete`) sobre ese mismo
+        presupuesto baseline; `actual_cost` es el costo actual (TJ3, mismo
+        criterio que `_tj_scenario_root_cost`) de las tareas con avance
+        real > 0 — proxy razonable de costo incurrido, ya que el addon no
+        lleva un libro de costos reales aparte del recalculado por TJ3.
+        Solo tareas raíz, para no contar doble (TJ3 ya acumula el costo de
+        subtareas en el padre, igual que `_tj_scenario_root_cost`)."""
+        self.ensure_one()
+        today = fields.Datetime.now()
+        root_task_ids = {t.id for t in self.task_ids if not t.parent_id}
+        schedule_by_task = {s.task_id.id: s for s in scenario.schedule_ids}
+
+        planned_value = 0.0
+        earned_value = 0.0
+        actual_cost = 0.0
+        for task_id in root_task_ids:
+            baseline_task = baseline_by_task.get(task_id)
+            if not baseline_task:
+                continue
+            baseline_cost = baseline_task.get('cost', 0.0)
+            baseline_end = baseline_task.get('end')
+            if baseline_end and fields.Datetime.from_string(baseline_end) <= today:
+                planned_value += baseline_cost
+            schedule = schedule_by_task.get(task_id)
+            complete = schedule.complete if schedule else 0.0
+            earned_value += baseline_cost * (complete / 100.0)
+            if schedule and complete > 0:
+                actual_cost += schedule.cost
+
+        return {
+            'planned_value': planned_value,
+            'earned_value': earned_value,
+            'actual_cost': actual_cost,
+            'cost_performance_index': (earned_value / actual_cost) if actual_cost else None,
+            'schedule_performance_index': (earned_value / planned_value) if planned_value else None,
+        }
 
     # ── Reporte de Gantt (knowledge.asset) ───────────────────────────────────
     #

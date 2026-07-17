@@ -6,8 +6,10 @@ de desviación baseline vs. real calculado contra ese freeze — ver
 models/project_project.py (_freeze_baseline_snapshot/
 _compute_and_save_deviation_report) y models/insight_scenario.py
 (action_generate_reports)."""
+from datetime import timedelta
 from unittest.mock import patch
 
+from odoo import fields
 from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase
 
@@ -163,6 +165,46 @@ class TestComputeAndSaveDeviationReport(TransactionCase):
         ])
         self.assertEqual(len(asset), 1, 'debe reusar el mismo asset, no duplicarlo')
         self.assertEqual(len(asset.version_ids), 2)
+
+    def test_evm_fields_when_task_already_due(self):
+        """Tarea cuyo fin baseline ya pasó: todo su presupuesto cuenta como
+        planned_value (debería estar 100% hecha a hoy según el plan)."""
+        past = fields.Datetime.now() - timedelta(days=10)
+        schedule = self._seed_schedule(cost=1000.0, end=fields.Datetime.to_string(past), complete=0.0)
+        self.project.action_start()  # congela cost=1000, end=pasado
+        schedule.write({'cost': 1200.0, 'complete': 50.0})  # avance real: 50%, costo actual 1200
+
+        self.project._compute_and_save_deviation_report(self.scenario)
+        asset = self.env['knowledge.asset'].search([
+            ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.scenario.id),
+            ('category', '=', 'insight_project.deviation_report'),
+        ])
+        payload = asset.latest_version().payload
+        self.assertEqual(payload['planned_value'], 1000.0)
+        self.assertEqual(payload['earned_value'], 500.0)
+        self.assertEqual(payload['actual_cost'], 1200.0)
+        self.assertAlmostEqual(payload['cost_performance_index'], 500.0 / 1200.0)
+        self.assertAlmostEqual(payload['schedule_performance_index'], 0.5)
+
+    def test_evm_indices_are_none_when_nothing_due_or_spent_yet(self):
+        """Tarea cuyo fin baseline todavía no llegó y sin avance real: PV/AC
+        en 0 no deben producir división por cero, sino None (índice sin
+        sentido todavía, no 'malo')."""
+        future = fields.Datetime.now() + timedelta(days=10)
+        self._seed_schedule(cost=1000.0, end=fields.Datetime.to_string(future), complete=0.0)
+        self.project.action_start()
+
+        self.project._compute_and_save_deviation_report(self.scenario)
+        asset = self.env['knowledge.asset'].search([
+            ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.scenario.id),
+            ('category', '=', 'insight_project.deviation_report'),
+        ])
+        payload = asset.latest_version().payload
+        self.assertEqual(payload['planned_value'], 0.0)
+        self.assertEqual(payload['earned_value'], 0.0)
+        self.assertEqual(payload['actual_cost'], 0.0)
+        self.assertIsNone(payload['cost_performance_index'])
+        self.assertIsNone(payload['schedule_performance_index'])
 
     def test_task_added_after_freeze_is_omitted_from_items(self):
         """Una tarea nueva desde el freeze no tiene punto de comparación —
