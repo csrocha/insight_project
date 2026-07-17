@@ -9,6 +9,113 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.10] - 2026-07-17
+
+### Prompt
+
+> "Si, avanza con la Épica 1/2. Logremos terminar esas dos, con los cambios
+> que se propusieron y los fix necesarios." — Épica 1 (prioridad entre
+> proyectos como desempate de recursos) y Épica 2 (lock/freeze de baseline +
+> reporte de desviación) del backlog de ecosistema (memoria
+> `project_ecosystem_roadmap`, `BACKLOG.md` ítems 5/6/7).
+
+### Discusión de diseño
+
+- **Épica 1 — TJ3 ya resuelve contención, no hacía falta arbitrar en
+  Python.** La única palanca real sin reescribir el motor de scheduling es
+  el atributo nativo `priority` de TJ3 (1-1000, default implícito 500), que
+  ya se usaba para la estrella de tarea (`_TJP_HIGH_PRIORITY = 800`, desde
+  v17.0.9.6.3). Se extendió el mismo mecanismo: `resource_priority`
+  (`project_improve`, default 10 = "neutral") se escala alrededor del 500
+  implícito, con techo en 799 para que ningún proyecto por sí solo pueda
+  igualar/superar la estrella de una tarea puntual. Sin configurar
+  (`resource_priority == 10`), no se emite ninguna línea — cero cambio de
+  comportamiento para proyectos que nunca tocaron el campo. En una corrida
+  combinada (`_tj_portfolio_recordset`), dos proyectos con distinta
+  prioridad compitiendo por el mismo `res.users` ahora emiten valores
+  `priority` distintos — es TJ3 quien desempata con su propio motor, igual
+  que ya hacía con la estrella.
+- **Épica 2 — el freeze NO puede engancharse a cualquier `write()` de
+  `is_baseline`.** `_apply_selection_strategy` reafirma `is_baseline=True`
+  en el ganador en **cada** corrida de schedule (incluida la del cron
+  nocturno de portfolio) — enganchar el freeze ahí regeneraría el "punto
+  fijo" todas las noches, contradiciendo el propósito mismo de comparar
+  "cómo se aprobó" contra "cómo está ahora". El único punto de aprobación
+  deliberado y poco frecuente que ya existe es `action_start()`
+  (`project_improve`, transición evaluación→progreso) — coincide
+  exactamente con el ciclo reevaluar→iniciar ya usado para re-baselinear a
+  mitad de proyecto (v17.0.9.7.5), así que no hizo falta ningún camino
+  adicional para ese caso.
+- El freeze se implementó **reusando `knowledge_asset`** en vez de un
+  modelo nuevo: un asset por escenario (categoría
+  `insight_project.baseline_snapshot`), una versión nueva por cada
+  `action_start()` — la inmutabilidad ya la da gratis
+  `knowledge.asset.version.write()` (bloquea todo salvo `state`, sin
+  reimplementar el patrón `MUTABLE_FIELDS`) y el historial de aprobaciones
+  sale gratis vía `asset.version_ids`, mismo beneficio que ya tienen los
+  reportes de costo/Gantt.
+- El reporte de desviación (`_compute_and_save_deviation_report`) compara
+  tarea por tarea el payload congelado contra `insight.task.schedule`
+  actual (delta de fecha fin y costo, más `complete` — el único dato de
+  avance real disponible). Exige el proyecto en estado "En progreso"
+  (según lo indicado por el usuario: antes de eso no hay avance real
+  contra el cual medir desviación, solo proyección) y un snapshot ya
+  congelado; ninguno de los dos casos rompe silenciosamente, explotan con
+  `UserError` explicando qué falta.
+- Al calcular el total de costo (congelado y actual) se evitó confiar en
+  `scenario.total_cost`/`grand_total_cost`: ese campo solo se actualiza
+  cuando corre `_apply_selection_strategy`, no automáticamente al cambiar
+  `schedule_ids` — mismo motivo por el que los reportes de costo
+  (`_tj_cost_by_phase_and_skill`/`_cost_by_department`) tampoco confían en
+  él. Se agregó `_tj_scenario_root_cost(scenario)` (suma de costo de tareas
+  raíz, mismo criterio que `total_cost`) calculado fresco desde
+  `schedule_ids` en ambos lados de la comparación.
+- **Unificación del botón de reportes** (pedido explícito del usuario):
+  `insight.scenario.action_generate_cost_reports` → `action_generate_reports`
+  (rename directo, sin shim — nadie más lo llamaba fuera de las vistas).
+  Corre costo+Gantt siempre (sin cambios de comportamiento) y desviación
+  solo si el proyecto está en progreso. `cost_report_count` →
+  `report_count`, ampliado a costo+desviación (el Gantt sigue sin contar
+  ahí, es por-proyecto no por-escenario). El cron nocturno
+  (`_cron_run_portfolio_schedule`) ahora regenera los tres reportes de cada
+  proyecto en progreso tras un recálculo exitoso — un proyecto que falle no
+  bloquea a los demás, mismo criterio de aislamiento que ya usaba el resto
+  del cron. Draft/evaluación no requirieron cambios: ya eran manuales y por
+  proyecto/portfolio respectivamente (el reporte de impacto de evaluación
+  es un mecanismo aparte, ya existente).
+
+### Agregado
+
+- `project.project._tjp_task_priority_line`/`_TJP_NEUTRAL_RESOURCE_PRIORITY`/
+  `_TJP_PRIORITY_SCALE`: desempate de `resource_priority` vía `priority` TJ3.
+- `project.project.action_start` (override de `project_improve`):
+  congela el baseline vigente al pasar a "En progreso".
+- `project.project._freeze_baseline_snapshot`/
+  `_get_or_create_baseline_snapshot_asset`/`_tj_scenario_root_cost`.
+- `project.project._compute_and_save_deviation_report`/
+  `_get_or_create_deviation_asset`.
+- Categorías de `knowledge.asset` nuevas: `insight_project.baseline_snapshot`,
+  `insight_project.deviation_report` (sumada a `report_asset_ids`).
+- Tests: `test_tjp_export.py` (prioridad cross-proyecto, techo en 799,
+  estrella siempre gana) y `tests/test_baseline_deviation.py` nuevo (freeze,
+  inmutabilidad, cálculo de deltas, gates de estado/snapshot, botón
+  unificado, cron).
+
+### Modificado
+
+- `insight.scenario.action_generate_cost_reports` → `action_generate_reports`;
+  `cost_report_count`/`_compute_cost_report_count` →
+  `report_count`/`_compute_report_count`.
+- `project.project.action_generate_cost_reports` (wrapper) →
+  `action_generate_reports`.
+- `views/insight_scenario_views.xml`/`views/project_project_views.xml`:
+  botones/campo renombrados.
+- `_cron_run_portfolio_schedule`: regenera reportes tras el recálculo.
+- `docs/modules/insight_project.md`: documentadas ambas épicas y las
+  categorías de asset nuevas.
+
+---
+
 ## [17.0.9.7.9] - 2026-07-16
 
 ### Modificado

@@ -222,7 +222,7 @@ class TestComputeAndSaveCostReports(TransactionCase):
         self.project.schedule_dirty = False
 
     def test_action_run_schedule_alone_creates_no_snapshot(self):
-        """El disparo es explícito ('Generar reportes de costos'), nunca
+        """El disparo es explícito ('Generar reportes'), nunca
         automático en un reschedule normal."""
         sc_id = self.project._tjp_scenario_id(self.scenario)
         csv_content = (
@@ -309,7 +309,7 @@ class TestReportCostReportHtml(TransactionCase):
         self.assertIn('width: 60.0%', html_text)
 
 
-class TestActionGenerateCostReportsGuards(TransactionCase):
+class TestActionGenerateReportsGuards(TransactionCase):
 
     @classmethod
     def setUpClass(cls):
@@ -320,4 +320,4 @@ class TestActionGenerateCostReportsGuards(TransactionCase):
 
     def test_project_wrapper_requires_baseline_scenario(self):
         with self.assertRaises(UserError):
-            self.project.action_generate_cost_reports()
+            self.project.action_generate_reports()

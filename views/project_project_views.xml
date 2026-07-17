@@ -74,7 +74,7 @@
                 </page>
                 <page string="Reportes" name="insight_reports" invisible="not is_tj_enabled">
                     <div class="mb16">
-                        <button name="action_generate_cost_reports" type="object"
+                        <button name="action_generate_reports" type="object"
                                 string="Actualizar reportes" class="btn-primary"
                                 invisible="not last_scheduled"/>
                     </div>

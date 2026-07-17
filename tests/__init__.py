@@ -7,3 +7,4 @@ from . import test_scenario_selection
 from . import test_cost_reports
 from . import test_portfolio_scheduling
 from . import test_tjp_parser
+from . import test_baseline_deviation

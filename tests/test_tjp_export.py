@@ -776,6 +776,65 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn('  priority 800', text)
         self.assertIn('    priority 800', text)
 
+    def test_default_resource_priority_omits_priority_line(self):
+        """resource_priority default (10, project_improve) es 'neutral':
+        cero cambio de comportamiento para proyectos que nunca tocaron el
+        campo, igual que Low en task.priority."""
+        self.assertEqual(self.project.resource_priority, 10)
+        task = self._task(name='Sin configurar')
+        lines = self.project._tjp_task_block(task)
+        self.assertFalse(any(l.strip().startswith('priority') for l in lines))
+
+    def test_higher_resource_priority_emits_value_above_default(self):
+        self.project.resource_priority = 20
+        task = self._task(name='Proyecto prioritario')
+        lines = self.project._tjp_task_block(task)
+        self.assertIn('  priority 600', '\n'.join(lines))
+        self.project.resource_priority = 10
+
+    def test_lower_resource_priority_emits_value_below_default(self):
+        self.project.resource_priority = 5
+        task = self._task(name='Proyecto de baja prioridad')
+        lines = self.project._tjp_task_block(task)
+        self.assertIn('  priority 450', '\n'.join(lines))
+        self.project.resource_priority = 10
+
+    def test_resource_priority_never_reaches_high_priority_ceiling(self):
+        """Un resource_priority extremo satura en 799 — nunca puede igualar
+        ni superar la estrella de tarea (_TJP_HIGH_PRIORITY = 800)."""
+        self.project.resource_priority = 1000
+        task = self._task(name='Prioridad extrema')
+        lines = self.project._tjp_task_block(task)
+        self.assertIn('  priority 799', '\n'.join(lines))
+        self.project.resource_priority = 10
+
+    def test_starred_task_wins_over_any_resource_priority(self):
+        self.project.resource_priority = 1000
+        task = self._task(name='Urgente en proyecto prioritario', priority='1')
+        lines = self.project._tjp_task_block(task)
+        self.assertIn('  priority 800', '\n'.join(lines))
+        self.project.resource_priority = 10
+
+    def test_two_projects_with_different_resource_priority_emit_different_values(self):
+        """Criterio de aceptación de la Épica 1: dado un candidato en dos
+        proyectos con distinta prioridad, cada uno emite un valor `priority`
+        distinto en el .tjp combinado — TJ3 prioriza al de mayor valor."""
+        other_project = self.env['project.project'].create({
+            'name': 'Otro proyecto', 'is_tj_enabled': True,
+            'date_start': '2026-06-29', 'resource_priority': 30,
+        })
+        self.project.resource_priority = 5
+        task_a = self._task(name='Tarea A')
+        task_b = self.env['project.task'].create({
+            'name': 'Tarea B', 'project_id': other_project.id,
+        })
+        line_a = self.project._tjp_task_priority_line(task_a, '')
+        line_b = other_project._tjp_task_priority_line(task_b, '')
+        self.assertNotEqual(line_a, line_b)
+        self.assertIn('priority 450', line_a)
+        self.assertIn('priority 700', line_b)
+        self.project.resource_priority = 10
+
     def test_extra_skill_group_emits_second_mandatory_allocate_entry(self):
         task = self._task(name='Par de desarrollo', allocated_hours=16.0, user_ids=[(6, 0, [self.u1.id])])
         self._skill_group(task, [self.u2.id])

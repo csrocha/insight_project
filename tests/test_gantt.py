@@ -150,11 +150,11 @@ class TestComputeAndSaveGanttReport(TransactionCase):
         self.assertEqual(len(assets.version_ids), 2)
         self.assertEqual(assets.latest_version().version, 2)
 
-    def test_action_generate_cost_reports_also_regenerates_gantt(self):
-        """El botón 'Actualizar reportes' (insight.scenario.action_generate_
-        cost_reports) dispara ambos reportes en un solo click."""
+    def test_action_generate_reports_also_regenerates_gantt(self):
+        """El botón 'Actualizar reportes' (insight.scenario.
+        action_generate_reports) dispara costo+Gantt en un solo click."""
         self._seed_schedule()
-        self.plan.action_generate_cost_reports()
+        self.plan.action_generate_reports()
 
         count = self.env['knowledge.asset'].search_count([
             ('res_model', '=', 'project.project'), ('res_id', '=', self.project.id),

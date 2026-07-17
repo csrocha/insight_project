@@ -97,47 +97,44 @@ están en el `BACKLOG.md` de ese módulo; acá solo lo que es de
 todavía no existen — riesgos, EVM/ventas, portal, IA) en la memoria
 `project_ecosystem_roadmap`.
 
-### 5. Prioridad entre proyectos como desempate de recursos
+### ~~5. Prioridad entre proyectos como desempate de recursos~~ — RESUELTO
 
-Hoy, en modo ejecución, todos los proyectos compiten por los mismos
-candidatos sin ningún criterio de desempate — es la brecha de mayor
-impacto detectada en la auditoría del ecosistema. Depende de un campo
-nuevo en `project.project` (`resource_priority`, ver `project_improve/
-BACKLOG.md`); acá el trabajo es usarlo en el punto donde
-`_apply_selection_strategy()`/la resolución de `resource_pool_ids`
-compartidos resuelve conflictos entre proyectos — hoy esa resolución es
-estrictamente intra-proyecto (`project_project.py:1349-1387`, nunca mira
-otros `project.project`). Criterio de aceptación: dado un empleado
-candidato en dos proyectos con distinta prioridad, el de mayor prioridad
-se queda con el recurso en el cálculo automático.
+Resuelto en v17.0.9.7.10 (2026-07-17): `resource_priority` (`project_improve`)
+ahora se traduce al atributo nativo `priority` de TJ3
+(`_tjp_task_priority_line`) — sin configurar (default 10) no cambia nada;
+con un valor distinto, escala alrededor del 500 implícito de TJ3, con techo
+en 799 para nunca igualar la estrella de tarea (`_TJP_HIGH_PRIORITY = 800`).
+No hizo falta arbitrar nada en Python: en una corrida combinada
+(`_tj_portfolio_recordset`), dos proyectos con distinta prioridad compitiendo
+por el mismo recurso quedan desempatados por el propio motor de TJ3. Ver
+CHANGELOG.md [17.0.9.7.10] y `docs/modules/insight_project.md`.
 
-Es un primer paso más chico que el ítem 3 de arriba (portfolio completo):
-no requiere unificar todos los proyectos en un solo `.tjp`, solo usar la
-prioridad como criterio de desempate donde ya se resuelven pools
-compartidos.
+### ~~6. Lock/freeze de un escenario al marcarlo baseline~~ — RESUELTO
 
-### 6. Lock/freeze de un escenario al marcarlo baseline
+Resuelto en v17.0.9.7.10 (2026-07-17): `action_start()` (evaluación→progreso)
+congela el escenario baseline vigente como una versión nueva de un
+`knowledge.asset` (categoría `insight_project.baseline_snapshot`) —
+inmutable gracias a `knowledge.asset.version.write()` (patrón ya existente,
+no reimplementado). No se tocó `insight.task.schedule` (sigue siendo la
+corrida "viva"): el freeze vive aparte, específicamente para no congelarse
+solo en `action_start` y no en cada `write()` de `is_baseline` (que
+`_apply_selection_strategy` reafirma en cada corrida, incluido el cron
+nocturno — congelar ahí hubiera regenerado el "punto fijo" todas las
+noches).
 
-Hoy `is_baseline` (`insight_scenario.py`) es un booleano sin ninguna
-protección: cada re-import/reschedule (`_import_scenario_csv`,
-`project_project.py:1436-1442`) borra y recrea `schedule_ids` del mismo
-escenario sin importar si es baseline o no — no hay forma de comparar
-"cómo se aprobó el proyecto" contra "cómo está ahora" porque el baseline
-se pisa solo. Idea: al marcar/aprobar un escenario como baseline, congelar
-una copia inmutable de fechas/costos, mismo patrón que
-`knowledge.asset.version.write()` (bloquea todo salvo `state`) — ya usado
-en el módulo `knowledge_asset` que `insight_project` ya consume (ver
-`_get_or_create_cost_asset`/`_compute_and_save_cost_reports`, v17.0.9.7.0).
+### ~~7. Reporte de desviación baseline vs. real (+ publicación como knowledge.asset)~~ — RESUELTO
 
-### 7. Reporte de desviación baseline vs. real (+ publicación como knowledge.asset)
-
-Depende del ítem 6 (necesita un baseline congelado contra qué comparar).
-Generar automáticamente el delta (fechas, costo, avance) entre el
-baseline y el estado actual del proyecto, sin depender de comparar dos
-reportes a mano. Publicar cada corte de comparación como
-`knowledge.asset` versionado — mismo patrón ya implementado para
-`_compute_and_save_cost_reports`, pero acá con `category` propia (ej.
-`insight_project.deviation_report`) en vez de reusar la de costos.
+Resuelto en v17.0.9.7.10 (2026-07-17): `_compute_and_save_deviation_report`
+compara el baseline congelado (ítem 6) contra `insight.task.schedule`
+actual, tarea por tarea (delta de fecha fin y costo, más `complete`), y
+publica el corte como `knowledge.asset` versionado (categoría
+`insight_project.deviation_report`). Solo aplica con el proyecto en estado
+"En progreso" (necesita avance real, no proyección). De paso se unificó el
+botón "Generar reportes de costos" → "Generar reportes"
+(`insight.scenario.action_generate_reports`), que ahora corre costo+Gantt
+siempre y desviación cuando corresponde, y el cron nocturno
+(`_cron_run_portfolio_schedule`) regenera los tres reportes de cada
+proyecto en progreso tras cada recálculo.
 
 _Fuente: backlog de ecosistema propuesto por el usuario (2026-07-13,
 "Épica 1" ítem 2 y "Épica 2" completa). Ver `project_ecosystem_roadmap` en

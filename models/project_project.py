@@ -193,6 +193,21 @@ class ProjectProject(models.Model):
             driver.action_run_schedule(interactive=False)
         except UserError as exc:
             driver.message_post(body=str(exc))
+            return
+        # Reportes al día tras el recálculo nocturno, cada proyecto contra su
+        # propio baseline (costo+Gantt siempre; desviación porque el estado
+        # ya es 'progress'). Un proyecto que falle no bloquea a los demás —
+        # mismo criterio de aislamiento que el resto del cron.
+        for project in progress_projects:
+            baseline = project.scenario_ids.filtered('is_baseline')[:1]
+            if not baseline:
+                continue
+            try:
+                project._compute_and_save_cost_reports(baseline)
+                project._compute_and_save_gantt_report()
+                project._compute_and_save_deviation_report(baseline)
+            except UserError as exc:
+                project.message_post(body=str(exc))
 
     def _check_horizon_overrun(self):
         """Avisa (sin sobreescribir self.date) cuando el horizonte de
@@ -478,6 +493,12 @@ class ProjectProject(models.Model):
     # binario Low/High): 800 alcanza para que gane contención de recursos
     # frente a cualquier tarea que se quede en el default implícito.
     _TJP_HIGH_PRIORITY = 800
+    # Desempate cross-proyecto (ver _tjp_task_priority_line): resource_priority
+    # (project_improve, default 10) se escala alrededor del 500 implícito de
+    # TJ3, con techo en 799 para que ningún proyecto por sí solo pueda igualar
+    # o superar la estrella de tarea (_TJP_HIGH_PRIORITY).
+    _TJP_NEUTRAL_RESOURCE_PRIORITY = 10
+    _TJP_PRIORITY_SCALE = 10
 
     def _tjp_cost_account(self):
         """Cuenta de costo declarada una sola vez para que la columna 'cost' de
@@ -707,6 +728,26 @@ class ProjectProject(models.Model):
             ]
         return lines
 
+    def _tjp_task_priority_line(self, task, ind):
+        """Línea `priority` de la tarea, o None si no aplica (preserva el
+        default implícito de TJ3, 500). La estrella nativa de Odoo
+        (task.priority == '1') sigue ganando siempre, sin importar
+        resource_priority del proyecto. Si no está starreada, deriva la
+        prioridad del resource_priority del proyecto (project_improve) —
+        único desempate real entre proyectos combinados en la misma corrida
+        (ver _tj_portfolio_recordset/_generate_tjp), ya que Python no arbitra
+        contención de recursos, solo describe candidatos (_tjp_allocate) y es
+        TJ3 quien decide con su propio motor. Sin configurar (resource_priority
+        == _TJP_NEUTRAL_RESOURCE_PRIORITY, el default), no emite nada — cero
+        cambio de comportamiento para proyectos que nunca tocaron el campo."""
+        if task.priority == '1':
+            return f'{ind}  priority {self._TJP_HIGH_PRIORITY}'
+        delta = task.project_id.resource_priority - self._TJP_NEUTRAL_RESOURCE_PRIORITY
+        if not delta:
+            return None
+        value = max(1, min(self._TJP_HIGH_PRIORITY - 1, 500 + delta * self._TJP_PRIORITY_SCALE))
+        return f'{ind}  priority {value}'
+
     def _tjp_task_block(self, task, depth=0, now_date=None):
         if now_date is None:
             now_date = self._tjp_now_date()
@@ -715,8 +756,9 @@ class ProjectProject(models.Model):
         ind = '  ' * depth
 
         lines = [f'{ind}task {t_id} "{t_name}" {{']
-        if task.priority == '1':
-            lines.append(f'{ind}  priority {self._TJP_HIGH_PRIORITY}')
+        priority_line = self._tjp_task_priority_line(task, ind)
+        if priority_line is not None:
+            lines.append(priority_line)
         # complete no afecta el scheduling (TJ3 lo documenta como solo para
         # reporting) — se emite siempre, aunque sea 0, para pisar el cálculo
         # naive de TJ3 basado en `now` con el avance real (horas imputadas
@@ -1112,7 +1154,7 @@ class ProjectProject(models.Model):
             },
         }
 
-    def action_generate_cost_reports(self):
+    def action_generate_reports(self):
         """Wrapper de conveniencia sobre el proyecto: resuelve el
         escenario baseline y delega en insight.scenario (que es el dueño
         real de la acción, ver models/insight_scenario.py) — así el botón
@@ -1122,7 +1164,7 @@ class ProjectProject(models.Model):
         scenario = self.scenario_ids.filtered('is_baseline')[:1]
         if not scenario:
             raise UserError(_('No hay un escenario baseline. Ejecute el schedule primero.'))
-        return scenario.action_generate_cost_reports()
+        return scenario.action_generate_reports()
 
     def _compute_report_asset_ids(self):
         Asset = self.env['knowledge.asset']
@@ -1130,11 +1172,191 @@ class ProjectProject(models.Model):
             project.report_asset_ids = Asset.search([
                 '&', ('category', 'in', [
                     self._TJP_COST_REPORT_CATEGORY, self._TJP_GANTT_REPORT_CATEGORY,
+                    self._TJP_DEVIATION_REPORT_CATEGORY,
                 ]),
                 '|',
                 '&', ('res_model', '=', 'insight.scenario'), ('res_id', 'in', project.scenario_ids.ids),
                 '&', ('res_model', '=', 'project.project'), ('res_id', '=', project.id),
             ])
+
+    # ── Baseline freeze + reporte de desviación ──────────────────────────────
+    #
+    # is_baseline (insight.scenario) es un booleano sin protección propia:
+    # _apply_selection_strategy reafirma is_baseline=True en el ganador en
+    # CADA corrida (incluida la del cron nocturno), así que no sirve como
+    # "punto fijo" contra el que comparar avance real. El freeze solo ocurre
+    # en action_start (evaluación→progreso, ver override abajo) — una acción
+    # humana explícita y poco frecuente, no en cada write de is_baseline.
+
+    _TJP_BASELINE_SNAPSHOT_CATEGORY = 'insight_project.baseline_snapshot'
+    _TJP_DEVIATION_REPORT_CATEGORY = 'insight_project.deviation_report'
+
+    def _get_or_create_baseline_snapshot_asset(self, scenario):
+        """Un knowledge.asset por escenario — cada action_start agrega una
+        VERSIÓN nueva (ver _freeze_baseline_snapshot), inmutable gracias a
+        knowledge.asset.version.write() (bloquea todo salvo state): el
+        historial de aprobaciones sale gratis vía asset.version_ids, mismo
+        patrón que _get_or_create_cost_asset."""
+        self.ensure_one()
+        Asset = self.env['knowledge.asset']
+        asset = Asset.search([
+            ('res_model', '=', 'insight.scenario'),
+            ('res_id', '=', scenario.id),
+            ('category', '=', self._TJP_BASELINE_SNAPSHOT_CATEGORY),
+        ], limit=1)
+        if asset:
+            return asset
+        manager_group = self.env.ref('project.group_project_manager', raise_if_not_found=False)
+        return Asset.create({
+            'name': _('Baseline congelado — %(project)s / %(scenario)s') % {
+                'project': self.name, 'scenario': scenario.name,
+            },
+            'res_model': 'insight.scenario',
+            'res_id': scenario.id,
+            'category': self._TJP_BASELINE_SNAPSHOT_CATEGORY,
+            'visibility': 'shared',
+            'shared_group_ids': [(6, 0, manager_group.ids)] if manager_group else False,
+        })
+
+    def _tj_scenario_root_cost(self, scenario):
+        """Suma de costo de las tareas raíz de este proyecto en `scenario` —
+        mismo criterio que scenario.total_cost (ver _compute_scenario_
+        aggregates), pero calculado fresco desde schedule_ids en vez de
+        confiar en ese campo cacheado (que solo se actualiza cuando corre
+        _apply_selection_strategy, no automáticamente al cambiar
+        schedule_ids) — mismo criterio que ya usan los reportes de costo
+        (_tj_cost_by_phase_and_skill/_cost_by_department), que tampoco
+        confían en total_cost/grand_total_cost."""
+        self.ensure_one()
+        root_task_ids = {t.id for t in self.task_ids if not t.parent_id}
+        return sum(s.cost for s in scenario.schedule_ids if s.task_id.id in root_task_ids)
+
+    def _freeze_baseline_snapshot(self, scenario):
+        """Congela una copia inmutable de fechas/costos de `scenario` — el
+        punto de comparación fijo que usa _compute_and_save_deviation_report.
+        No toca insight.task.schedule (sigue siendo la corrida "viva", que
+        se sigue recalculando en cada reschedule para el Gantt) — el freeze
+        vive aparte, como una versión de knowledge.asset."""
+        self.ensure_one()
+        asset = self._get_or_create_baseline_snapshot_asset(scenario)
+        payload = {
+            'frozen_at': fields.Datetime.to_string(fields.Datetime.now()),
+            'scenario_id': scenario.id,
+            'scenario_name': scenario.name,
+            'total_cost': self._tj_scenario_root_cost(scenario),
+            'computed_end_date': fields.Datetime.to_string(scenario.computed_end_date) or None,
+            'tasks': [{
+                'task_id': s.task_id.id,
+                'bsi': s.bsi or None,
+                'name': s.task_id.name,
+                'start': fields.Datetime.to_string(s.start_scheduled) or None,
+                'end': fields.Datetime.to_string(s.end_scheduled) or None,
+                'cost': s.cost,
+                'effort_days': s.effort_days,
+            } for s in scenario.schedule_ids],
+        }
+        return asset.create_version(
+            payload, schema='insight_project.baseline_snapshot', schema_version='1.0',
+        )
+
+    def action_start(self):
+        """Extiende project_improve.action_start (evaluación→progreso):
+        además de la transición de estado, congela el baseline vigente. Sin
+        escenario baseline todavía (proyecto nunca planificado), no hay nada
+        que congelar — no rompe."""
+        super().action_start()
+        for project in self:
+            baseline = project.scenario_ids.filtered('is_baseline')[:1]
+            if baseline:
+                project._freeze_baseline_snapshot(baseline)
+
+    def _get_or_create_deviation_asset(self, scenario):
+        self.ensure_one()
+        Asset = self.env['knowledge.asset']
+        asset = Asset.search([
+            ('res_model', '=', 'insight.scenario'),
+            ('res_id', '=', scenario.id),
+            ('category', '=', self._TJP_DEVIATION_REPORT_CATEGORY),
+        ], limit=1)
+        if asset:
+            return asset
+        manager_group = self.env.ref('project.group_project_manager', raise_if_not_found=False)
+        return Asset.create({
+            'name': _('Desviación baseline vs. real — %(project)s / %(scenario)s') % {
+                'project': self.name, 'scenario': scenario.name,
+            },
+            'res_model': 'insight.scenario',
+            'res_id': scenario.id,
+            'category': self._TJP_DEVIATION_REPORT_CATEGORY,
+            'visibility': 'shared',
+            'shared_group_ids': [(6, 0, manager_group.ids)] if manager_group else False,
+        })
+
+    def _compute_and_save_deviation_report(self, scenario):
+        """Delta (fechas, costo) entre el baseline congelado
+        (_freeze_baseline_snapshot) y el estado actual de `scenario`. Solo
+        tiene sentido con el proyecto en ejecución: es el único momento en
+        que hay avance real (`complete`) contra el que medir desviación, no
+        solo una proyección."""
+        self.ensure_one()
+        if self.state != 'progress':
+            raise UserError(_(
+                'El reporte de desviación requiere el proyecto en estado '
+                '"En progreso" — antes de eso no hay avance real contra el '
+                'cual medir desviación, solo proyección.'
+            ))
+        snapshot_asset = self.env['knowledge.asset'].search([
+            ('res_model', '=', 'insight.scenario'),
+            ('res_id', '=', scenario.id),
+            ('category', '=', self._TJP_BASELINE_SNAPSHOT_CATEGORY),
+        ], limit=1)
+        if not snapshot_asset or not snapshot_asset.current_version_id:
+            raise UserError(_(
+                'No hay un baseline congelado para este escenario todavía — '
+                'pase el proyecto a "En progreso" al menos una vez para '
+                'generar el punto de comparación.'
+            ))
+        baseline_payload = snapshot_asset.current_version_id.payload
+        baseline_by_task = {t['task_id']: t for t in baseline_payload.get('tasks', [])}
+
+        items = []
+        for schedule in scenario.schedule_ids:
+            baseline_task = baseline_by_task.get(schedule.task_id.id)
+            if not baseline_task:
+                continue
+            end_delta_days = None
+            baseline_end = baseline_task.get('end')
+            if baseline_end and schedule.end_scheduled:
+                end_delta_days = (
+                    schedule.end_scheduled - fields.Datetime.from_string(baseline_end)
+                ).total_seconds() / 86400.0
+            items.append({
+                'task_id': schedule.task_id.id,
+                'name': schedule.task_id.name,
+                'baseline_end': baseline_end,
+                'current_end': fields.Datetime.to_string(schedule.end_scheduled) or None,
+                'end_delta_days': end_delta_days,
+                'baseline_cost': baseline_task.get('cost', 0.0),
+                'current_cost': schedule.cost,
+                'cost_delta': schedule.cost - baseline_task.get('cost', 0.0),
+                'complete': schedule.complete,
+            })
+
+        total_baseline_cost = baseline_payload.get('total_cost', 0.0)
+        total_current_cost = self._tj_scenario_root_cost(scenario)
+        payload = {
+            'generated_at': fields.Datetime.to_string(fields.Datetime.now()),
+            'frozen_at': baseline_payload.get('frozen_at'),
+            'currency': (self.company_id.currency_id.name if self.company_id else False) or 'USD',
+            'items': items,
+            'total_baseline_cost': total_baseline_cost,
+            'total_current_cost': total_current_cost,
+            'total_cost_delta': total_current_cost - total_baseline_cost,
+        }
+        asset = self._get_or_create_deviation_asset(scenario)
+        return asset.create_version(
+            payload, schema='insight_project.deviation_report', schema_version='1.0',
+        )
 
     # ── Reporte de Gantt (knowledge.asset) ───────────────────────────────────
     #
@@ -1142,7 +1364,7 @@ class ProjectProject(models.Model):
     # costo): el Gantt siempre superpuso todos los escenarios del proyecto en
     # un mismo gráfico (leyenda de colores por escenario), así que el payload
     # también agrega todos juntos. Se regenera cuando se pide "Actualizar
-    # reportes" (ver insight.scenario.action_generate_cost_reports), no en
+    # reportes" (ver insight.scenario.action_generate_reports), no en
     # cada visualización.
 
     _TJP_GANTT_REPORT_CATEGORY = 'insight_project.gantt_report'

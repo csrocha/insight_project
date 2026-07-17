@@ -122,44 +122,52 @@ class InsightScenario(models.Model):
 
     # ── Reportes de costo (ver project.project._compute_and_save_cost_reports) ──
 
-    cost_report_count = fields.Integer(
-        compute='_compute_cost_report_count', string='Reportes de costos',
+    report_count = fields.Integer(
+        compute='_compute_report_count', string='Reportes',
     )
 
-    def _compute_cost_report_count(self):
+    def _compute_report_count(self):
         Asset = self.env['knowledge.asset']
         for scenario in self:
-            scenario.cost_report_count = Asset.search_count([
+            scenario.report_count = Asset.search_count([
                 ('res_model', '=', 'insight.scenario'),
                 ('res_id', '=', scenario.id),
-                ('category', '=', 'insight_project.cost_report'),
+                ('category', 'in', [
+                    'insight_project.cost_report', 'insight_project.deviation_report',
+                ]),
             ])
 
     def action_view_cost_reports(self):
         self.ensure_one()
         return {
             'type': 'ir.actions.act_window',
-            'name': _('Reportes de costos'),
+            'name': _('Reportes'),
             'res_model': 'knowledge.asset',
             'view_mode': 'list,form',
             'domain': [
                 ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.id),
-                ('category', '=', 'insight_project.cost_report'),
+                ('category', 'in', [
+                    'insight_project.cost_report', 'insight_project.deviation_report',
+                ]),
             ],
         }
 
-    def action_generate_cost_reports(self):
+    def action_generate_reports(self):
         """El botón real vive acá (por escenario); project.project solo
         expone un wrapper de conveniencia que resuelve el baseline (ver
-        project.project.action_generate_cost_reports). Aprovecha el mismo
-        disparo para regenerar el reporte de Gantt del proyecto (no es por
-        escenario, agrega todos los escenarios del proyecto — ver
-        project.project._compute_and_save_gantt_report), así "Actualizar
-        reportes" siempre deja ambos reportes al día sin importar desde
-        qué escenario se lo dispare."""
+        project.project.action_generate_reports). Corre cada reporte
+        aplicable: costo y Gantt siempre (el Gantt no es por escenario,
+        agrega todos los del proyecto — ver
+        project.project._compute_and_save_gantt_report); desviación
+        baseline vs. real solo si el proyecto está en ejecución (necesita
+        avance real, no solo proyección — ver
+        project.project._compute_and_save_deviation_report, que también
+        valida esto por su cuenta)."""
         self.ensure_one()
         result = self.project_id._compute_and_save_cost_reports(self)
         self.project_id._compute_and_save_gantt_report()
+        if self.project_id.state == 'progress':
+            self.project_id._compute_and_save_deviation_report(self)
         return result
 
 
