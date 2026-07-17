@@ -5,16 +5,26 @@
         <field name="model">project.project</field>
         <field name="inherit_id" ref="project.edit_project"/>
         <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_run_schedule" type="object"
+                        string="Replanificar" icon="fa-refresh"
+                        invisible="not is_tj_enabled"/>
+                <button name="action_export_tjp" type="object"
+                        string="Exportar TJP"
+                        invisible="not is_tj_enabled"/>
+                <button name="action_open_import_wizard" type="object"
+                        string="Importar TJP..." class="btn-secondary"/>
+            </xpath>
             <xpath expr="//notebook" position="inside">
-                <page string="TaskJuggler" name="tashjuggler">
+                <page string="Scheduler" name="tashjuggler">
                     <group>
                         <group>
                             <field name="is_tj_enabled"/>
-                            <field name="tj_now"
-                                   invisible="not is_tj_enabled"/>
-                            <field name="tj_end_date"
-                                   invisible="not is_tj_enabled"/>
                             <field name="tj_timezone"
+                                   invisible="not is_tj_enabled"/>
+                            <field name="tj_allocation_selection"
+                                   invisible="not is_tj_enabled"/>
+                            <field name="scenario_selection_strategy"
                                    invisible="not is_tj_enabled"/>
                         </group>
                         <group>
@@ -23,18 +33,9 @@
                         </group>
                     </group>
                     <div class="mb16">
-                        <button name="action_run_schedule" type="object"
-                                string="Ejecutar Schedule" class="btn-primary me-2"
-                                invisible="not is_tj_enabled"/>
                         <button name="action_view_gantt" type="object"
-                                string="Ver Gantt" class="btn-secondary me-2"
+                                string="Ver Gantt" class="btn-secondary"
                                 invisible="not last_scheduled"/>
-                        <button name="action_export_tjp" type="object"
-                                string="Exportar TJP" class="btn-secondary me-2"
-                                invisible="not is_tj_enabled"/>
-                        <button name="action_open_import_wizard" type="object"
-                                string="Importar TJP..." class="btn-secondary"
-                                invisible="is_tj_enabled"/>
                     </div>
                     <separator string="Escenarios" invisible="not is_tj_enabled"/>
                     <field name="scenario_ids" invisible="not is_tj_enabled"
@@ -42,6 +43,48 @@
                         <tree>
                             <field name="name"/>
                             <field name="is_baseline"/>
+                            <field name="total_cost"/>
+                            <field name="extra_cost"/>
+                            <field name="grand_total_cost"/>
+                            <field name="computed_end_date"/>
+                            <field name="peak_resources"/>
+                            <field name="selection_score"
+                                   invisible="parent.scenario_selection_strategy != 'automatic'"/>
+                        </tree>
+                    </field>
+                    <group invisible="scenario_selection_strategy != 'automatic'">
+                        <group string="Pesos del score ponderado">
+                            <field name="scenario_weight_cost"/>
+                            <field name="scenario_weight_duration"/>
+                            <field name="scenario_weight_resources"/>
+                        </group>
+                    </group>
+                    <separator string="Costos extra (infra/SaaS)" invisible="not is_tj_enabled"/>
+                    <field name="cost_budget_ids" invisible="not is_tj_enabled"
+                           context="{'default_project_id': active_id}">
+                        <tree editable="bottom">
+                            <field name="product_id"/>
+                            <field name="skill_ids" widget="many2many_tags"/>
+                            <field name="individual"/>
+                            <field name="periodicity"/>
+                            <field name="amount"/>
+                            <field name="currency_id" groups="base.group_multi_currency"/>
+                        </tree>
+                    </field>
+                </page>
+                <page string="Reportes" name="insight_reports" invisible="not is_tj_enabled">
+                    <div class="mb16">
+                        <button name="action_generate_reports" type="object"
+                                string="Actualizar reportes" class="btn-primary"
+                                invisible="not last_scheduled"/>
+                    </div>
+                    <field name="report_asset_ids" nolabel="1">
+                        <tree create="0" delete="0" open="1">
+                            <field name="name"/>
+                            <field name="tags"/>
+                            <field name="write_date" string="Última versión"/>
+                            <button name="action_open_category_report" type="object"
+                                    string="Ver reporte" class="btn-link" icon="fa-bar-chart"/>
                         </tree>
                     </field>
                 </page>

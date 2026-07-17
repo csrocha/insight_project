@@ -8,6 +8,12 @@
                 <field name="name"/>
                 <field name="project_id"/>
                 <field name="is_baseline"/>
+                <field name="total_cost"/>
+                <field name="extra_cost"/>
+                <field name="grand_total_cost"/>
+                <field name="computed_end_date"/>
+                <field name="peak_resources"/>
+                <field name="selection_score"/>
             </tree>
         </field>
     </record>
@@ -18,16 +24,35 @@
         <field name="arch" type="xml">
             <form>
                 <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_cost_reports" type="object"
+                                class="oe_stat_button" icon="fa-bar-chart">
+                            <field name="report_count" widget="statinfo" string="Reportes"/>
+                        </button>
+                    </div>
+                    <div class="mb16">
+                        <button name="action_generate_reports" type="object"
+                                string="Generar reportes" class="btn-secondary"/>
+                    </div>
                     <group>
                         <field name="name"/>
                         <field name="project_id"/>
                         <field name="is_baseline"/>
+                        <field name="cost_budget_ids" widget="many2many_tags"/>
+                    </group>
+                    <group string="Resultado del último schedule">
+                        <field name="total_cost" readonly="1"/>
+                        <field name="extra_cost" readonly="1"/>
+                        <field name="grand_total_cost" readonly="1"/>
+                        <field name="computed_end_date" readonly="1"/>
+                        <field name="peak_resources" readonly="1"/>
+                        <field name="selection_score" readonly="1"/>
                     </group>
                     <notebook>
                         <page string="Eficiencias">
                             <field name="efficiency_ids">
                                 <tree editable="bottom">
-                                    <field name="partner_id"/>
+                                    <field name="user_id"/>
                                     <field name="efficiency"/>
                                 </tree>
                             </field>

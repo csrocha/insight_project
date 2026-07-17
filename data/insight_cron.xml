@@ -11,5 +11,15 @@
             <field name="numbercall">-1</field>
             <field name="active">True</field>
         </record>
+        <record id="ir_cron_run_portfolio_schedule" model="ir.cron">
+            <field name="name">Insight Project: Reschedule combinado de proyectos en progreso</field>
+            <field name="model_id" ref="project.model_project_project"/>
+            <field name="state">code</field>
+            <field name="code">model._cron_run_portfolio_schedule()</field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">days</field>
+            <field name="numbercall">-1</field>
+            <field name="active">True</field>
+        </record>
     </data>
 </odoo>

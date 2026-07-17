@@ -9,8 +9,7 @@ ver el [AGENTS.md de fop_odoo_theme](https://github.com/observatoriopyme/fop_odo
 
 ## Contexto del módulo
 
-- Extiende `project.project` y `project.task` — revisar compatibilidad con `project_timeline`
-  (ambos heredan `project.task` con `_inherit`, sin conflicto siempre que no pisen los mismos campos)
+- Extiende `project.project` y `project.task`
 - El microservicio TJ3 es el canal de scheduling; Odoo no ejecuta TJ3 directamente
 - `insight.task.schedule` es de solo escritura del microservicio — el usuario no edita estos registros
 
@@ -26,6 +25,6 @@ ver el [AGENTS.md de fop_odoo_theme](https://github.com/observatoriopyme/fop_odo
 ## Actualizacion de CHANGELOG (obligatorio)
 
 **Antes de cada commit**, agregar una entrada en `CHANGELOG.md` siguiendo el
-formato y las reglas definidas en la **Sección 17 del AGENTS.md raíz** de `fop-odoo`.
+formato y las reglas definidas en la **Sección 10 del AGENTS.md raíz** de `fop-odoo`.
 
 No es un checkbox opcional: sin entrada en CHANGELOG no se completa el commit.

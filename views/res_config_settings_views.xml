@@ -3,44 +3,26 @@
     <record id="res_config_settings_view_form_insight" model="ir.ui.view">
         <field name="name">res.config.settings.view.form.inherit.insight_project</field>
         <field name="model">res.config.settings</field>
-        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="inherit_id" ref="project.res_config_settings_view_form"/>
         <field name="arch" type="xml">
-            <xpath expr="//form" position="inside">
-                <div class="app_settings_block"
-                     data-string="TaskJuggler"
-                     string="TaskJuggler"
-                     data-key="insight_project">
-                    <h2>TaskJuggler</h2>
-                    <div class="row mt16 o_settings_container">
-                        <div class="col-12 col-lg-6 o_setting_box">
-                            <div class="o_setting_left_pane"/>
-                            <div class="o_setting_right_pane">
-                                <label for="tj_microservice_url"/>
-                                <div class="text-muted">
-                                    URL base del microservicio TJ3 (ej: https://tj3.example.com)
-                                </div>
-                                <field name="tj_microservice_url"
-                                       placeholder="https://tj3.example.com"/>
+            <xpath expr="//app[@name='project']" position="inside">
+                <block title="TaskJuggler" id="insight_project_taskjuggler">
+                    <setting id="tj_microservice_url_setting" help="URL base del microservicio TJ3 (ej: https://tj3.example.com)">
+                        <field name="tj_microservice_url" placeholder="https://tj3.example.com"/>
+                    </setting>
+                    <setting id="tj_microservice_timeout_setting" help="Tiempo máximo de espera para el microservicio (segundos)">
+                        <field name="tj_microservice_timeout"/>
+                        <div class="content-group">
+                            <div class="mt8">
+                                <button name="action_test_tj_connection"
+                                        type="object"
+                                        string="Probar conexión"
+                                        class="btn-link"
+                                        icon="oi-arrow-right"/>
                             </div>
                         </div>
-                        <div class="col-12 col-lg-6 o_setting_box">
-                            <div class="o_setting_left_pane"/>
-                            <div class="o_setting_right_pane">
-                                <label for="tj_microservice_timeout"/>
-                                <div class="text-muted">
-                                    Tiempo máximo de espera para el microservicio (segundos)
-                                </div>
-                                <div class="d-flex align-items-center gap-2">
-                                    <field name="tj_microservice_timeout"/>
-                                    <button name="action_test_tj_connection"
-                                            type="object"
-                                            string="Probar conexión"
-                                            class="btn btn-sm btn-secondary"/>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                    </setting>
+                </block>
             </xpath>
         </field>
     </record>
