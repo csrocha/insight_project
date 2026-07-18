@@ -9,6 +9,68 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.12] - 2026-07-18
+
+### Prompt
+
+> "Tomemoslo" — ítem 4 del `BACKLOG.md` ("dime que punto es el
+> funcionalmente más importante" → se eligió por ser el único de los
+> pendientes que compromete la exactitud de algo ya construido: costo de
+> mano de obra, del que dependen los reportes de costo, CPI/SPI y
+> `margin`/`secured_margin` de `insight_project_sale`).
+
+### Discusión de diseño
+
+- Tres decisiones de política/alcance resueltas con el usuario antes de
+  tocar código:
+  1. **Divisor mensual→diario**: fijo `/30`, no calendario laboral real —
+     mismo criterio que ya usa `insight.cost.budget` para costos extra
+     (`insight_scenario.py:_cost_budget_contributions`, `amount/30` para
+     `periodicity='monthly'`). Se prefirió consistencia interna sobre
+     precisión de calendario (que hubiera requerido
+     `resource_calendar_id.get_work_duration_data()` y definir una
+     ventana de referencia, sin precedente en el código).
+  2. **Bruto vs. cargado**: bruto tal cual (`contract_id.wage`), sin
+     factor de carga social propio — confirmado que sin `hr_payroll`
+     (no instalado, ni siquiera `hr_contract` lo requiere como
+     dependencia) no existe ningún costo con aportes patronales
+     calculado en ningún lado del código; inventar un factor de carga
+     hubiera sido una política de costeo nueva sin pedido explícito.
+  3. **Sin contrato activo**: `0.0` (no participa del costeo), sin
+     fallback manual editable — mismo comportamiento que el default
+     anterior del campo manual, más simple que mirror-ear el patrón
+     `compute + readonly=False` de `hr_contract.resource_calendar_id`
+     (que sí permite override manual) porque acá ninguna rama de la
+     decisión necesitaba edición manual.
+- Con las 3 decisiones resueltas hacia "siempre compute, nunca edición
+  manual" en ambas ramas (con/sin contrato), el campo se implementó como
+  `compute + store=True + readonly=True` — a diferencia del patrón
+  `readonly=False` de `hr_contract` (pensado para permitir override), acá
+  no hace falta esa complejidad.
+- `hr_contract` no era dependencia de `insight_project` (confirmado
+  contra `ir_module_module` de la base `fop`, sesión previa) — se agregó
+  al manifest. Confirmado que es una dependencia liviana y autocontenida:
+  `hr_contract/__manifest__.py` solo depende de `hr` (ya instalado
+  transitivamente vía `hr_holidays`/`hr_attendance`/`hr_timesheet`), no
+  arrastra `hr_payroll` ni ningún módulo de nómina real.
+- Único punto de lectura de `tj_daily_rate` en todo el addon:
+  `_tjp_resource_block` (`project_project.py`, línea `rate {rate:.2f}`) —
+  el cambio es de impacto acotado, no toca ningún cálculo de costo de
+  tarea (`insight.task.schedule.cost` sigue viniendo tal cual del
+  taskreport de TJ3, que ya hizo la cuenta rate×días con el `rate` nuevo).
+
+### Modificado
+
+- `hr.employee.tj_daily_rate` (`models/hr_employee.py`): de campo manual
+  a `compute='_compute_tj_daily_rate', store=True, readonly=True`,
+  derivado de `contract_id.wage / 30.0` (0.0 sin contrato).
+- `__manifest__.py`: nueva dependencia `hr_contract`.
+- Tests: `tests/test_hr_employee.py` nuevo (deriva de wage, recomputa al
+  cambiar wage, sin contrato → 0, `_tjp_resource_block` refleja el valor
+  computado).
+
+---
+
 ## [17.0.9.7.11] - 2026-07-17
 
 ### Prompt

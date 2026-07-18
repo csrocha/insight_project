@@ -60,30 +60,17 @@ original. Ver CHANGELOG.md [17.0.9.7.5] para el detalle completo y los
 
 ## De la conversación de hoy (2026-07-10)
 
-### 4. Derivar `tj_daily_rate` de `hr.contract.wage` en vez de campo manual
+### ~~4. Derivar `tj_daily_rate` de `hr.contract.wage` en vez de campo manual~~ — RESUELTO
 
-Hoy `hr.employee.tj_daily_rate` (`hr_employee.py`) es un campo manual sin
-ninguna vista que lo autocalcule. El usuario preguntó si no podía salir
-del contrato de trabajo del empleado — la respuesta es que el dato
-existe (`hr.contract.wage`, salario bruto mensual, vía
-`hr.employee.contract_id` que ya resuelve cuál es el contrato vigente),
-pero hay 3 fricciones que hacen que no sea un cambio chico:
-
-- **Dependencia nueva**: `hr_contract` está desinstalado hoy en la base
-  `fop` (confirmado contra `ir_module_module`) y no es dependencia de
-  `insight_project` — instalarlo es una decisión de alcance, no solo de
-  código.
-- **Conversión de unidad**: `wage` es mensual, `tj_daily_rate` es diario
-  — hace falta decidir el divisor (¿22 días fijos? ¿los días laborables
-  reales del calendario del empleado ese mes?) y si se usa bruto o un
-  costo cargado (con aportes patronales), lo cual es una política de
-  costeo que hoy no está resuelta en ningún lado del código.
-- **Contrato ausente**: qué hacer si el empleado no tiene contrato activo
-  (¿0? ¿mantener el campo manual como fallback?).
-
-_Fuente: pregunta del usuario en la sesión del ítem "limits" (2026-07-10),
-sin implementar todavía — queda para validar la política de costeo antes
-de tocar código._
+Resuelto en v17.0.9.7.12 (2026-07-18): `tj_daily_rate` pasó de campo
+manual a `compute='_compute_tj_daily_rate', store=True, readonly=True` —
+`contract_id.wage / 30.0` (mismo divisor que ya usa `insight.cost.budget`
+para costos extra, `insight_scenario.py`), `0.0` sin contrato activo (sin
+fallback manual — decisión explícita del usuario). Bruto tal cual, sin
+factor de carga social propio (no hay costeo de aportes patronales
+disponible sin `hr_payroll`, que no está instalado). Nueva dependencia
+`hr_contract` agregada al manifest — liviana, solo depende de `hr` (ya
+instalado), no arrastra `hr_payroll`. Ver CHANGELOG.md [17.0.9.7.12].
 
 ---
 
