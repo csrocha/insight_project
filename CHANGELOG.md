@@ -9,6 +9,32 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.13] - 2026-07-19
+
+### Prompt
+
+> Épica 7 del roadmap de ecosistema: reportes de proyecto en el website
+> (vía `fop_odoo_project_report`, reusando `fop_odoo_report`).
+
+### Agregado
+
+- Bridge QWeb del reporte de desviación (`report/
+  report_deviation_report_*.xml` + `models/report_deviation_report.py`),
+  mismo patrón exacto que el bridge de costo ya existente
+  (`report_cost_report.py`): `ir.actions.report` con `model='knowledge.
+  asset'` y `asset_category='insight_project.deviation_report'`, un
+  `AbstractModel` que lee `asset.latest_version().payload`, y una
+  plantilla HTML standalone con el detalle de tareas (delta de fecha/
+  costo) y el resumen CPI/SPI.
+
+### Discusión de diseño
+
+- No hizo falta tocar `_compute_and_save_deviation_report` — el payload
+  ya existía (desde la Épica 2), solo faltaba un lector.
+- El bridge de costo (ya existente) y el de Gantt son la referencia
+  exacta que se calcó — mismo criterio de "reusar antes de reinventar"
+  que ya se venía aplicando en este ecosistema.
+
 ## [17.0.9.7.12] - 2026-07-18
 
 ### Prompt

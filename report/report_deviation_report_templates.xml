@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="report_deviation_report_html" name="Reporte de desviación (HTML)">
+        <html>
+            <head>
+                <meta charset="utf-8"/>
+                <title>Reportes de desviación</title>
+                <style>
+                    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; background: #fafafa; }
+                    .o_deviation_report { max-width: 760px; margin-bottom: 32px; }
+                    .o_deviation_report h2 { font-size: 15px; margin: 0 0 4px 0; color: #212121; }
+                    .o_deviation_report .o_meta { font-size: 10px; color: #9e9e9e; margin-bottom: 12px; }
+                    .o_deviation_report .o_summary { display: flex; gap: 24px; margin-bottom: 16px; }
+                    .o_deviation_report .o_summary_item { font-size: 11px; color: #424242; }
+                    .o_deviation_report .o_summary_item strong { display: block; font-size: 14px; }
+                    .o_deviation_report .o_good { color: #2e7d32; }
+                    .o_deviation_report .o_bad { color: #c62828; }
+                    .o_deviation_report table { width: 100%; border-collapse: collapse; font-size: 11px; }
+                    .o_deviation_report th { text-align: left; color: #757575; font-weight: normal; border-bottom: 1px solid #e0e0e0; padding: 4px 6px; }
+                    .o_deviation_report td { padding: 4px 6px; border-bottom: 1px solid #f0f0f0; }
+                    .o_deviation_report .o_num { text-align: right; }
+                    .o_deviation_report .o_empty { font-size: 12px; color: #757575; }
+                </style>
+            </head>
+            <body>
+                <t t-foreach="reports" t-as="report">
+                    <div class="o_deviation_report">
+                        <h2>Desviación baseline vs. real</h2>
+                        <div class="o_meta">
+                            Congelado: <t t-esc="report['frozen_at']"/>
+                            — Generado: <t t-esc="report['generated_at']"/>
+                        </div>
+                        <div class="o_summary">
+                            <div class="o_summary_item">
+                                Costo baseline
+                                <strong><t t-esc="'%.2f' % report['total_baseline_cost']"/> <t t-esc="report['currency']"/></strong>
+                            </div>
+                            <div class="o_summary_item">
+                                Costo actual
+                                <strong><t t-esc="'%.2f' % report['total_current_cost']"/> <t t-esc="report['currency']"/></strong>
+                            </div>
+                            <div class="o_summary_item">
+                                Δ costo
+                                <strong t-attf-class="#{'o_bad' if report['total_cost_delta'] > 0 else 'o_good'}">
+                                    <t t-esc="'%.2f' % report['total_cost_delta']"/> <t t-esc="report['currency']"/>
+                                </strong>
+                            </div>
+                            <div class="o_summary_item">
+                                CPI
+                                <strong t-attf-class="#{'o_good' if report['cost_performance_index'] and report['cost_performance_index'] &gt;= 1 else 'o_bad'}">
+                                    <t t-if="report['cost_performance_index']" t-esc="'%.2f' % report['cost_performance_index']"/>
+                                    <t t-else="">N/D</t>
+                                </strong>
+                            </div>
+                            <div class="o_summary_item">
+                                SPI
+                                <strong t-attf-class="#{'o_good' if report['schedule_performance_index'] and report['schedule_performance_index'] &gt;= 1 else 'o_bad'}">
+                                    <t t-if="report['schedule_performance_index']" t-esc="'%.2f' % report['schedule_performance_index']"/>
+                                    <t t-else="">N/D</t>
+                                </strong>
+                            </div>
+                        </div>
+                        <t t-if="not report['rows']">
+                            <div class="o_empty">Sin datos.</div>
+                        </t>
+                        <table t-if="report['rows']">
+                            <thead>
+                                <tr>
+                                    <th>Tarea</th>
+                                    <th class="o_num">Avance</th>
+                                    <th>Fin baseline</th>
+                                    <th>Fin actual</th>
+                                    <th class="o_num">Δ días</th>
+                                    <th class="o_num">Costo baseline</th>
+                                    <th class="o_num">Costo actual</th>
+                                    <th class="o_num">Δ costo</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <t t-foreach="report['rows']" t-as="row">
+                                    <tr>
+                                        <td t-esc="row['name']"/>
+                                        <td class="o_num"><t t-esc="'%.0f' % row['complete']"/>%</td>
+                                        <td t-esc="row['baseline_end']"/>
+                                        <td t-esc="row['current_end']"/>
+                                        <td t-attf-class="o_num #{'o_bad' if row['end_delta_days'] and row['end_delta_days'] &gt; 0 else 'o_good'}">
+                                            <t t-if="row['end_delta_days'] is not None" t-esc="'%.1f' % row['end_delta_days']"/>
+                                            <t t-else="">—</t>
+                                        </td>
+                                        <td class="o_num"><t t-esc="'%.2f' % row['baseline_cost']"/></td>
+                                        <td class="o_num"><t t-esc="'%.2f' % row['current_cost']"/></td>
+                                        <td t-attf-class="o_num #{'o_bad' if row['cost_delta'] > 0 else 'o_good'}">
+                                            <t t-esc="'%.2f' % row['cost_delta']"/>
+                                        </td>
+                                    </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                    </div>
+                </t>
+            </body>
+        </html>
+    </template>
+</odoo>
