@@ -32,11 +32,6 @@
                             <field name="last_scheduled" readonly="1"/>
                         </group>
                     </group>
-                    <div class="mb16">
-                        <button name="action_view_gantt" type="object"
-                                string="Ver Gantt" class="btn-secondary"
-                                invisible="not last_scheduled"/>
-                    </div>
                     <separator string="Escenarios" invisible="not is_tj_enabled"/>
                     <field name="scenario_ids" invisible="not is_tj_enabled"
                            context="{'default_project_id': active_id}">

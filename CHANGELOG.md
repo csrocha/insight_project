@@ -9,6 +9,22 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.15] - 2026-07-21
+
+### Prompt
+
+> El botón "Ver Gantt" de insight_project no debería verse, ya lo reemplaza
+> el botón de ver el reporte de gantt.
+
+### Eliminado
+
+- **Botón "Ver Gantt" (`action_view_gantt`) removido del tab Scheduler** en
+  `views/project_project_views.xml`. El tab Reportes ya ofrece "Ver reporte"
+  (`action_open_category_report`) sobre el reporte de Gantt versionado en
+  `knowledge.asset`, que reemplaza a la vista ad-hoc. El método
+  `action_view_gantt` y sus tests (`tests/test_gantt.py`) se dejan intactos
+  por si algún flujo lo sigue invocando programáticamente.
+
 ## [17.0.9.7.14] - 2026-07-21
 
 ### Prompt
