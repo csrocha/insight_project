@@ -9,6 +9,29 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.14] - 2026-07-21
+
+### Prompt
+
+> Upgrade de `insight_project` en prod falló con
+> `psycopg2.errors.UndefinedColumn: column "scenario_selection_strategy"
+> does not exist` dentro de `migrations/17.0.9.5.0/pre-migrate.py`.
+
+### Corregido
+
+- **`pre-migrate.py` de 17.0.9.5.0 asumía que `scenario_selection_strategy`
+  ya existía en la base**, porque en un upgrade incremental (versión por
+  versión) así es: el campo se creó en v17.0.9.4.0 y esta migración solo
+  reescribe sus valores. Pero en un upgrade que salta varias versiones de
+  una sola vez, Odoo corre **todos** los `pre-migrate` de las versiones
+  intermedias antes de ejecutar un único `_auto_init()` final -- si la
+  base venía de antes de 17.0.9.4.0, la columna todavía no existe en el
+  momento en que corre este script.
+- Se agrega el mismo guard de `information_schema.columns` que el propio
+  script ya usaba más abajo para la migración de `skill_id` -> `skill_ids`
+  (líneas originales 45-49): si la columna no existe, no hay nada que
+  reescribir y se saltea el bloque en vez de fallar.
+
 ## [17.0.9.7.13] - 2026-07-19
 
 ### Prompt

@@ -20,27 +20,37 @@ def migrate(cr, version):
        vieja al detectar que el modelo ya no la declara.
     """
     cr.execute("""
-        UPDATE project_project
-        SET scenario_selection_strategy = 'automatic',
-            scenario_weight_cost = 1, scenario_weight_duration = 0, scenario_weight_resources = 0
-        WHERE scenario_selection_strategy = 'min_cost'
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'project_project' AND column_name = 'scenario_selection_strategy'
     """)
-    cr.execute("""
-        UPDATE project_project
-        SET scenario_selection_strategy = 'automatic',
-            scenario_weight_cost = 0, scenario_weight_duration = 1, scenario_weight_resources = 0
-        WHERE scenario_selection_strategy = 'min_duration'
-    """)
-    cr.execute("""
-        UPDATE project_project
-        SET scenario_selection_strategy = 'automatic',
-            scenario_weight_cost = 0, scenario_weight_duration = 0, scenario_weight_resources = 1
-        WHERE scenario_selection_strategy = 'min_resources'
-    """)
-    cr.execute("""
-        UPDATE project_project SET scenario_selection_strategy = 'automatic'
-        WHERE scenario_selection_strategy = 'weighted_score'
-    """)
+    if cr.fetchone():
+        # La columna solo trae valores viejos (5 opciones) si ya existía antes
+        # de esta migración. En un upgrade que salta varias versiones de una,
+        # Odoo corre TODOS los pre-migrate antes de un único _auto_init final,
+        # así que si el campo se introdujo en una versión intermedia del mismo
+        # salto (v17.0.9.4.0), acá todavía no existe: nada que reescribir.
+        cr.execute("""
+            UPDATE project_project
+            SET scenario_selection_strategy = 'automatic',
+                scenario_weight_cost = 1, scenario_weight_duration = 0, scenario_weight_resources = 0
+            WHERE scenario_selection_strategy = 'min_cost'
+        """)
+        cr.execute("""
+            UPDATE project_project
+            SET scenario_selection_strategy = 'automatic',
+                scenario_weight_cost = 0, scenario_weight_duration = 1, scenario_weight_resources = 0
+            WHERE scenario_selection_strategy = 'min_duration'
+        """)
+        cr.execute("""
+            UPDATE project_project
+            SET scenario_selection_strategy = 'automatic',
+                scenario_weight_cost = 0, scenario_weight_duration = 0, scenario_weight_resources = 1
+            WHERE scenario_selection_strategy = 'min_resources'
+        """)
+        cr.execute("""
+            UPDATE project_project SET scenario_selection_strategy = 'automatic'
+            WHERE scenario_selection_strategy = 'weighted_score'
+        """)
 
     cr.execute("""
         SELECT 1 FROM information_schema.columns
