@@ -7,6 +7,7 @@ from . import insight_employee_shift
 from . import project_project
 from . import report_cost_report
 from . import report_gantt_report
+from . import report_deviation_report
 from . import project_task
 from . import project_milestone
 from . import tjp_parser

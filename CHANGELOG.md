@@ -9,6 +9,171 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.13] - 2026-07-19
+
+### Prompt
+
+> Épica 7 del roadmap de ecosistema: reportes de proyecto en el website
+> (vía `fop_odoo_project_report`, reusando `fop_odoo_report`).
+
+### Agregado
+
+- Bridge QWeb del reporte de desviación (`report/
+  report_deviation_report_*.xml` + `models/report_deviation_report.py`),
+  mismo patrón exacto que el bridge de costo ya existente
+  (`report_cost_report.py`): `ir.actions.report` con `model='knowledge.
+  asset'` y `asset_category='insight_project.deviation_report'`, un
+  `AbstractModel` que lee `asset.latest_version().payload`, y una
+  plantilla HTML standalone con el detalle de tareas (delta de fecha/
+  costo) y el resumen CPI/SPI.
+
+### Discusión de diseño
+
+- No hizo falta tocar `_compute_and_save_deviation_report` — el payload
+  ya existía (desde la Épica 2), solo faltaba un lector.
+- El bridge de costo (ya existente) y el de Gantt son la referencia
+  exacta que se calcó — mismo criterio de "reusar antes de reinventar"
+  que ya se venía aplicando en este ecosistema.
+
+## [17.0.9.7.12] - 2026-07-18
+
+### Prompt
+
+> "Tomemoslo" — ítem 4 del `BACKLOG.md` ("dime que punto es el
+> funcionalmente más importante" → se eligió por ser el único de los
+> pendientes que compromete la exactitud de algo ya construido: costo de
+> mano de obra, del que dependen los reportes de costo, CPI/SPI y
+> `margin`/`secured_margin` de `insight_project_sale`).
+
+### Discusión de diseño
+
+- Tres decisiones de política/alcance resueltas con el usuario antes de
+  tocar código:
+  1. **Divisor mensual→diario**: fijo `/30`, no calendario laboral real —
+     mismo criterio que ya usa `insight.cost.budget` para costos extra
+     (`insight_scenario.py:_cost_budget_contributions`, `amount/30` para
+     `periodicity='monthly'`). Se prefirió consistencia interna sobre
+     precisión de calendario (que hubiera requerido
+     `resource_calendar_id.get_work_duration_data()` y definir una
+     ventana de referencia, sin precedente en el código).
+  2. **Bruto vs. cargado**: bruto tal cual (`contract_id.wage`), sin
+     factor de carga social propio — confirmado que sin `hr_payroll`
+     (no instalado, ni siquiera `hr_contract` lo requiere como
+     dependencia) no existe ningún costo con aportes patronales
+     calculado en ningún lado del código; inventar un factor de carga
+     hubiera sido una política de costeo nueva sin pedido explícito.
+  3. **Sin contrato activo**: `0.0` (no participa del costeo), sin
+     fallback manual editable — mismo comportamiento que el default
+     anterior del campo manual, más simple que mirror-ear el patrón
+     `compute + readonly=False` de `hr_contract.resource_calendar_id`
+     (que sí permite override manual) porque acá ninguna rama de la
+     decisión necesitaba edición manual.
+- Con las 3 decisiones resueltas hacia "siempre compute, nunca edición
+  manual" en ambas ramas (con/sin contrato), el campo se implementó como
+  `compute + store=True + readonly=True` — a diferencia del patrón
+  `readonly=False` de `hr_contract` (pensado para permitir override), acá
+  no hace falta esa complejidad.
+- `hr_contract` no era dependencia de `insight_project` (confirmado
+  contra `ir_module_module` de la base `fop`, sesión previa) — se agregó
+  al manifest. Confirmado que es una dependencia liviana y autocontenida:
+  `hr_contract/__manifest__.py` solo depende de `hr` (ya instalado
+  transitivamente vía `hr_holidays`/`hr_attendance`/`hr_timesheet`), no
+  arrastra `hr_payroll` ni ningún módulo de nómina real.
+- Único punto de lectura de `tj_daily_rate` en todo el addon:
+  `_tjp_resource_block` (`project_project.py`, línea `rate {rate:.2f}`) —
+  el cambio es de impacto acotado, no toca ningún cálculo de costo de
+  tarea (`insight.task.schedule.cost` sigue viniendo tal cual del
+  taskreport de TJ3, que ya hizo la cuenta rate×días con el `rate` nuevo).
+
+### Modificado
+
+- `hr.employee.tj_daily_rate` (`models/hr_employee.py`): de campo manual
+  a `compute='_compute_tj_daily_rate', store=True, readonly=True`,
+  derivado de `contract_id.wage / 30.0` (0.0 sin contrato).
+- `__manifest__.py`: nueva dependencia `hr_contract`.
+- Tests: `tests/test_hr_employee.py` nuevo (deriva de wage, recomputa al
+  cambiar wage, sin contrato → 0, `_tjp_resource_block` refleja el valor
+  computado).
+
+---
+
+## [17.0.9.7.11] - 2026-07-17
+
+### Prompt
+
+> "Pasemos a la épica 4 y 5" — Épica 4 (gestión de riesgos) y Épica 5
+> (Earned Value/rentabilidad) del backlog de ecosistema (memoria
+> `project_ecosystem_roadmap`). Esta entrada cubre solo la parte de
+> `insight_project` (hook de extensión para riesgos + EVM); los módulos
+> nuevos (`insight_project_risk`/`insight_project_sale`) versionan aparte.
+
+### Discusión de diseño
+
+- **Buffer de riesgo — por qué un wrapper de tarea y no un ajuste en
+  Python.** El requisito (confirmado con el usuario) es que el buffer
+  mueva fechas reales de sucesoras, no solo un número en un reporte — eso
+  descarta el patrón de `insight.cost.budget` (ajuste puro en
+  `_compute_extra_cost`, nunca toca el `.tjp`). TJ3 no tiene un atributo
+  nativo "duración extra sin costo" sobre una tarea `effort`-driven, así
+  que la tarea con riesgo abierto deja de ser una hoja plana y pasa a ser
+  un wrapper con dos hijos sintéticos: `_work` (el trabajo real, sin
+  cambios) y `_risk{n}` (pura `duration` de calendario, sin `allocate` —
+  no consume recurso ni infla costo). TJ3 ya rolea automáticamente
+  fechas/costo de un padre real desde sus hijos (mismo mecanismo que ya
+  usa cualquier tarea con subtareas reales) — por eso **ninguna otra
+  tarea necesita cambiar su `depends`**: quien ya dependía de la tarea
+  sigue apuntando al mismo id, solo que ahora ese id es un padre cuyo fin
+  incluye el buffer. Se evaluó y descartó una alternativa con una tarea
+  sintética *hermana* + redirección de las dependencias de cada sucesora
+  hacia ella — mucho más invasivo (tocaría la resolución de dependencias,
+  ya delicada por las reglas de orden `depends`/`precedes` y el límite de
+  una sola arista FF por tarea) para el mismo resultado.
+- **Validado contra el binario real** (tj3-ms v3.8.4, 2026-07-17, mismo
+  criterio que otras veces en este addon — ver memoria
+  `feedback_tj3_empirical_testing`): un `.tjp` de prueba con el wrapper
+  (`t5` → `t5.t5_work` + `t5.t5_risk1`) más una tarea sucesora dependiendo
+  de `t5` corrió la sucesora después del buffer completo (viernes fin de
+  work+buffer → lunes hábil siguiente), no solo después del trabajo real.
+  Confirma también que `_parse_task_id_from_tj_id` ya ignora en silencio
+  los ids sintéticos (`t5.t5_work` → intenta `int('5_work')`, falla,
+  `None`) sin necesitar ningún cambio — la fila que `insight.task.schedule`
+  termina usando es la del padre (`t5`), con las fechas ya empujadas.
+- Riesgos `closed`/`materialized` (a definir en el módulo satélite) no
+  deberían seguir aportando buffer hacia adelante — ese criterio de
+  filtrado vive en `insight_project_risk`, acá solo el hook vacío por
+  defecto (`_tj_task_risk_buffers`, cero cambio de comportamiento sin el
+  módulo instalado).
+- Dos o más riesgos abiertos en la misma tarea se **encadenan** (risk2
+  depende de risk1, no de work) para que sumen días — en paralelo (ambos
+  dependiendo de `work`) solo aportarían el mayor de los dos, subestimando
+  la exposición combinada.
+- **CPI/SPI vive acá, no en `insight_project_sale`.** Earned Value
+  Management es costo/avance puro — no necesita ingresos, solo el
+  baseline congelado (Épica 2, v17.0.9.7.10) + `complete`. Se agregó como
+  campos extra al mismo payload que ya arma
+  `_compute_and_save_deviation_report` (`planned_value`/`earned_value`/
+  `actual_cost`/`cost_performance_index`/`schedule_performance_index`),
+  en vez de crear un reporte nuevo o depender de `insight_project_sale` —
+  cada módulo aporta solo lo que realmente necesita (EVM acá,
+  rentabilidad allá). Cálculo restringido a tareas raíz (mismo criterio
+  que `_tj_scenario_root_cost`, para no contar doble el costo que TJ3 ya
+  acumula de subtareas en el padre); los índices son `None` (no `0`/error)
+  cuando `planned_value`/`actual_cost` son 0 — un índice sin sentido
+  todavía no es lo mismo que un mal desempeño.
+
+### Agregado
+
+- `project.project._tj_task_risk_buffers` (hook, `[]` por defecto),
+  `_tjp_leaf_body_lines`, `_tjp_risk_buffer_wrapper_lines`.
+- `project.project._tj_scenario_evm`, wireado a
+  `_compute_and_save_deviation_report`.
+- Tests: `test_tjp_export.py` (wrapper con 1 y 2+ riesgos, texto exacto
+  pinneado contra lo validado en tj3-ms), `test_tjp_schedule_import.py`
+  (parser ignora ids sintéticos), `test_baseline_deviation.py` (PV/EV/AC/
+  CPI/SPI, con y sin avance/vencimiento todavía).
+
+---
+
 ## [17.0.9.7.10] - 2026-07-17
 
 ### Prompt

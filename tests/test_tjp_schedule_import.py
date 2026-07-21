@@ -27,6 +27,16 @@ class TestTjCsvParsingHelpers(TransactionCase):
         self.assertIsNone(ProjectProject._parse_task_id_from_tj_id(''))
         self.assertIsNone(ProjectProject._parse_task_id_from_tj_id('not-a-task'))
 
+    def test_parse_task_id_ignores_synthetic_risk_buffer_children(self):
+        """Los hijos sintéticos que arma _tjp_risk_buffer_wrapper_lines
+        (insight_project_risk) no son project.task reales — deben ignorarse
+        en vez de resolver a un id incorrecto. La fila del padre (`t5`,
+        rollup con las fechas ya empujadas por el buffer) sí debe seguir
+        resolviendo normal."""
+        self.assertIsNone(ProjectProject._parse_task_id_from_tj_id('t5.t5_work'))
+        self.assertIsNone(ProjectProject._parse_task_id_from_tj_id('t5.t5_risk1'))
+        self.assertEqual(ProjectProject._parse_task_id_from_tj_id('t5'), 5)
+
     def test_parse_milestone_id_from_tj_id(self):
         self.assertEqual(ProjectProject._parse_milestone_id_from_tj_id('m42'), 42)
 

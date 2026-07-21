@@ -15,6 +15,8 @@ from odoo import fields
 from odoo.exceptions import UserError, ValidationError
 from odoo.tests.common import TransactionCase
 
+from ..models.project_project import ProjectProject
+
 
 class TestTjpProjectHeader(TransactionCase):
 
@@ -834,6 +836,77 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn('priority 450', line_a)
         self.assertIn('priority 700', line_b)
         self.project.resource_priority = 10
+
+    def test_no_risk_buffers_by_default_leaves_task_flat(self):
+        """_tj_task_risk_buffers devuelve [] por defecto (sin
+        insight_project_risk instalado) — cero cambio de comportamiento."""
+        task = self._task(name='Sin riesgos', allocated_hours=40.0, user_ids=[(6, 0, [self.u1.id])])
+        text = '\n'.join(self.project._tjp_task_block(task))
+        self.assertNotIn('_work', text)
+        self.assertNotIn('_risk', text)
+        self.assertIn('  effort 5.00d', text)
+
+    def test_single_risk_buffer_wraps_task_in_work_and_risk_children(self):
+        task = self._task(name='Riesgosa', allocated_hours=40.0, user_ids=[(6, 0, [self.u1.id])])
+        with patch.object(
+            ProjectProject, '_tj_task_risk_buffers',
+            lambda self, t: [('Proveedor externo', 3.0)] if t == task else [],
+        ):
+            text = '\n'.join(self.project._tjp_task_block(task))
+        t_id = self.project._tjp_task_id(task)
+        self.assertIn(f'  task {t_id}_work "Riesgosa" {{', text)
+        self.assertIn('    effort 5.00d', text)
+        self.assertIn(f'    allocate u{self.u1.id}', text)
+        self.assertIn(f'  task {t_id}_risk1 "Buffer riesgo: Proveedor externo" {{', text)
+        self.assertIn('    duration 3.00d', text)
+        self.assertIn(f'    depends !!{t_id}.{t_id}_work', text)
+        # El buffer no debe aparecer como si fuera esfuerzo/costo de la tarea real.
+        self.assertNotIn('    effort 3.00d', text)
+
+    def test_multiple_risk_buffers_chain_sequentially(self):
+        """Dos riesgos abiertos deben sumar días (encadenados), no competir
+        en paralelo por el mismo predecesor — si no, dos riesgos de 3 días
+        cada uno solo aportarían 3 días de margen total en vez de 6."""
+        task = self._task(name='Doble riesgo', allocated_hours=8.0, user_ids=[(6, 0, [self.u1.id])])
+        with patch.object(
+            ProjectProject, '_tj_task_risk_buffers',
+            lambda self, t: [('Riesgo A', 2.0), ('Riesgo B', 3.0)] if t == task else [],
+        ):
+            text = '\n'.join(self.project._tjp_task_block(task))
+        t_id = self.project._tjp_task_id(task)
+        self.assertIn(f'    depends !!{t_id}.{t_id}_work', text)  # risk1 depende de work
+        self.assertIn(f'    depends !!{t_id}.{t_id}_risk1', text)  # risk2 depende de risk1, no de work
+        self.assertIn('    duration 2.00d', text)
+        self.assertIn('    duration 3.00d', text)
+
+    def test_risk_buffer_wrapper_schedules_correctly_against_real_tj3(self):
+        """Confirmado empíricamente contra tj3-ms v3.8.4 (2026-07-17, fuera
+        de este test): una tarea sucesora que depende de la tarea envuelta
+        se agenda después del buffer, no solo después del trabajo real —
+        acá solo se fija el TEXTO exacto del .tjp que se envía, para pinnear
+        la sintaxis ya validada contra el binario."""
+        task = self._task(name='Con buffer', allocated_hours=40.0, user_ids=[(6, 0, [self.u1.id])])
+        with patch.object(
+            ProjectProject, '_tj_task_risk_buffers',
+            lambda self, t: [('Riesgo', 3.0)] if t == task else [],
+        ):
+            text = '\n'.join(self.project._tjp_task_block(task))
+        t_id = self.project._tjp_task_id(task)
+        expected = (
+            f'task {t_id} "Con buffer" {{\n'
+            f'  complete 0.00\n'
+            f'  chargeset {self.project._TJP_COST_ACCOUNT_ID}\n'
+            f'  task {t_id}_work "Con buffer" {{\n'
+            f'    effort 5.00d\n'
+            f'    allocate u{self.u1.id}\n'
+            f'  }}\n'
+            f'  task {t_id}_risk1 "Buffer riesgo: Riesgo" {{\n'
+            f'    duration 3.00d\n'
+            f'    depends !!{t_id}.{t_id}_work\n'
+            f'  }}\n'
+            f'}}'
+        )
+        self.assertIn(expected, text)
 
     def test_extra_skill_group_emits_second_mandatory_allocate_entry(self):
         task = self._task(name='Par de desarrollo', allocated_hours=16.0, user_ids=[(6, 0, [self.u1.id])])

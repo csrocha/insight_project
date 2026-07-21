@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_report_deviation_report_html" model="ir.actions.report">
+        <field name="name">Reporte de desviación (HTML)</field>
+        <field name="model">knowledge.asset</field>
+        <field name="report_type">qweb-html</field>
+        <field name="report_name">insight_project.report_deviation_report_html</field>
+        <field name="asset_category">insight_project.deviation_report</field>
+    </record>
+</odoo>
