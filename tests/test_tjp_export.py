@@ -632,6 +632,18 @@ class TestTjpTaskBlock(TransactionCase):
         text = '\n'.join(self.project._tjp_task_block(parent))
         self.assertIn(f'depends !!t{parent.id}.t{blocker.id}', text)
 
+    def test_archived_blocker_is_not_emitted_as_dependency(self):
+        """Bug real: depend_on_ids es Many2many y no filtra archivados (a
+        diferencia de task_ids/child_ids, One2many, que sí). Una tarea
+        archivada (ej.: marcada terminada y archivada) nunca se declara en
+        el .tjp, así que emitir su `depends` produce "has unknown depends"
+        en TJ3. Se filtra directamente en _tjp_task_block."""
+        blocker = self._task(name='Bloqueante', active=False)
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        lines = self.project._tjp_task_block(dependent)
+        text = '\n'.join(lines)
+        self.assertNotIn('depends', text)
+
     def test_dependency_multiple_blockers_share_task_type(self):
         """tj_dependency_type es el default de la tarea: sin overrides por
         arista (dependency_type_ids), se aplica igual a todos sus

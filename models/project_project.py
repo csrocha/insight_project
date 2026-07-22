@@ -883,7 +883,12 @@ class ProjectProject(models.Model):
         #    eso como máximo una arista FF por tarea; más de una falla loud
         #    en vez de exportar un .tjp que TJ3 agenda mal sin avisar.
         ff_dep = None
-        for dep in task.depend_on_ids:
+        # depend_on_ids es Many2many: a diferencia de task_ids/child_ids
+        # (One2many, filtrados por active_test al declarar tareas más
+        # arriba), no excluye tareas archivadas. Sin este filtro, una
+        # bloqueante archivada genera un `depends` hacia un id que TJ3
+        # nunca ve declarado ("has unknown depends").
+        for dep in task.depend_on_ids.filtered('active'):
             if dep.project_id != task.project_id:
                 continue
             dep_type = task._tj_dependency_type_for(dep)

@@ -9,6 +9,40 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.16] - 2026-07-22
+
+### Prompt
+
+> En insight_project, cuando hago un reschedule veo que las tareas del
+> proyecto que están terminadas no se agregan al scheduler, aunque si se
+> las nombra cuando son dependencias. Esto provoca que TJ3 busque tareas
+> que no están declaradas.
+
+### Corregido
+
+- **`_tjp_task_block` emitía `depends` hacia tareas archivadas**, causando
+  que TJ3 rechace el `.tjp` con `Task X has unknown depends Y` (reproducido
+  en producción: microservicio TJ3 devolvió 422 con
+  `Task t1937.t1938 has unknown depends t1911.t1924`). La causa es una
+  asimetría nativa de Odoo entre tipos de campo: `task_ids`/`child_ids`
+  (One2many, usados para decidir qué tareas se **declaran** en el .tjp) se
+  resuelven vía `search()` y por default excluyen archivados
+  (`active_test=True`); `depend_on_ids` (Many2many, usado para las líneas
+  `depends`) se lee directo de la tabla de relación y **no** filtra por
+  `active`. Una tarea archivada (ej.: marcada terminada y archivada) queda
+  entonces sin declarar pero sigue siendo referenciada como bloqueante de
+  cualquier tarea que dependa de ella.
+- Fix: `task.depend_on_ids.filtered('active')` en el loop de dependencias
+  (`models/project_project.py`), para que solo se emitan `depends` hacia
+  tareas efectivamente declaradas.
+
+### Discusión de diseño
+
+- Se descartó declarar también las tareas archivadas que son bloqueantes
+  de alguna tarea activa (preservaría la ruta crítica real) por ser más
+  invasivo; el fix mínimo alcanza para el síntoma reportado y no cambia el
+  comportamiento de scheduling de las tareas activas.
+
 ## [17.0.9.7.15] - 2026-07-21
 
 ### Prompt
