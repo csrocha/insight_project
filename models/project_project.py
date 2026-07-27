@@ -891,6 +891,8 @@ class ProjectProject(models.Model):
         for dep in task.depend_on_ids.filtered('active'):
             if dep.project_id != task.project_id:
                 continue
+            if not self._tjp_dep_ancestors_active(dep):
+                continue
             dep_type = task._tj_dependency_type_for(dep)
             if dep_type == 'FF':
                 if ff_dep is not None:
@@ -1591,6 +1593,28 @@ class ProjectProject(models.Model):
     @staticmethod
     def _tjp_milestone_id(milestone):
         return f'm{milestone.id}'
+
+    @staticmethod
+    def _tjp_dep_ancestors_active(dep):
+        """True si toda la cadena de ancestros de `dep` (dentro de su mismo
+        proyecto) está activa. `dep` mismo ya se filtra con `.filtered('active')`
+        antes de llegar acá, pero `_tjp_task_abs_path` arma el path caminando
+        `parent_id` crudo, sin chequear `active` en cada ancestro — si un
+        ancestro está archivado (ej.: tarea contenedora marcada terminada),
+        la recursión de `_generate_tjp` nunca desciende a sus hijos (aunque
+        sigan activos) y ese padre nunca se declara como `task` en el .tjp.
+        El path resultante (ej. `t_padre.t_dep`) apunta a un anidamiento que
+        TJ3 nunca vio declarado → "has unknown depends", aunque `dep` en sí
+        esté activo. Bug real reproducido con una tarea + su hito dados por
+        completados y archivados, cuya sub-tarea seguía activa y bloqueando
+        otra tarea del proyecto."""
+        project_id = dep.project_id.id
+        t = dep.parent_id
+        while t and t.project_id.id == project_id:
+            if not t.active:
+                return False
+            t = t.parent_id
+        return True
 
     @staticmethod
     def _tjp_task_abs_path(dep, owner=None):

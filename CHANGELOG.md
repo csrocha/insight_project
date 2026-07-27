@@ -9,6 +9,48 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.17] - 2026-07-27
+
+### Prompt
+
+> Error del microservicio TJ3: 422 Client Error: unknown for url:
+> https://insight-tj3-ms-prod-822951196286.us-central1.run.app/schedule
+> /tmp/tmp8x7elxvh/project.tjp:90: Error in scenario p17_plan: Task
+> t1937.t1938 has unknown depends t1911.t1924
+>
+> [confirmado por el usuario contra producción: t1911 y t1924 existen y
+> están hechas/completadas — es decir, archivadas]
+
+### Corregido
+
+- **`_tjp_task_abs_path` seguía produciendo `depends` hacia paths nunca
+  declarados en el .tjp**, incluso después del fix de v17.0.9.7.16 (mismo
+  error reproducido en producción, idéntico mensaje). Esa versión filtraba
+  únicamente si la tarea bloqueante (`dep`) en sí estaba archivada — pero
+  `_tjp_task_abs_path` arma el path completo caminando `parent_id` de forma
+  cruda, sin chequear el `active` de los **ancestros** de `dep`. Si un
+  ancestro (ej.: la tarea contenedora de una fase, dada por terminada y
+  archivada) tiene un hijo que sigue activo, la recursión de `_generate_tjp`
+  nunca desciende a ese hijo (arranca desde tareas raíz activas y nunca
+  visita los hijos de un padre archivado) — el hijo activo queda huérfano,
+  sin declararse en el .tjp, pero cualquier otra tarea que dependa de él
+  sigue emitiendo su `depends` con el path completo del ancestro archivado
+  (`t{ancestro}.t{hijo}`), que TJ3 nunca vio declarado.
+- Fix: nuevo helper `_tjp_dep_ancestors_active` (`models/project_project.py`)
+  que recorre la cadena de ancestros de `dep` (dentro de su mismo proyecto)
+  y devuelve `False` si alguno está archivado; se usa como filtro adicional
+  en el mismo loop de dependencias que ya filtraba por `dep.active`.
+
+### Discusión de diseño
+
+- Se consideró declarar igual las tareas archivadas que actúan como
+  contenedoras de hijos activos (preservaría más fielmente la jerarquía
+  real), pero se descartó por ser más invasivo — el fix mínimo alcanza:
+  si el hijo activo queda sin padre declarado, tratar su dependencia como
+  no-emitible es equivalente en efecto a filtrar el `dep` mismo (mismo
+  criterio de v17.0.9.7.16, extendido a toda la cadena de ancestros en vez
+  de solo el nodo hoja).
+
 ## [17.0.9.7.16] - 2026-07-22
 
 ### Prompt

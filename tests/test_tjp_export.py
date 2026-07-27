@@ -644,6 +644,22 @@ class TestTjpTaskBlock(TransactionCase):
         text = '\n'.join(lines)
         self.assertNotIn('depends', text)
 
+    def test_archived_ancestor_blocker_not_emitted_as_dependency(self):
+        """Bug real (2026-07-27): el blocker en sí puede estar activo, pero
+        si su PADRE está archivado (ej.: eje/hito dado por terminado y
+        archivado, con una sub-tarea que sigue activa), la recursión de
+        _generate_tjp nunca declara ese padre como `task` en el .tjp —
+        _tjp_task_abs_path arma igual el path completo caminando parent_id
+        crudo, produciendo un `depends` hacia un anidamiento que TJ3 nunca
+        vio ("has unknown depends"). Se filtra chequeando que toda la
+        cadena de ancestros del blocker esté activa, no solo el blocker."""
+        archived_parent = self._task(name='Eje archivado', active=False)
+        blocker = self._task(name='Bloqueante', parent_id=archived_parent.id)
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        lines = self.project._tjp_task_block(dependent)
+        text = '\n'.join(lines)
+        self.assertNotIn('depends', text)
+
     def test_dependency_multiple_blockers_share_task_type(self):
         """tj_dependency_type es el default de la tarea: sin overrides por
         arista (dependency_type_ids), se aplica igual a todos sus
