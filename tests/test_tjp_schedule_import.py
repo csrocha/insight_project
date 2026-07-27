@@ -329,3 +329,78 @@ class TestSyncGanttDates(TransactionCase):
         project = self.env['project.project'].create({'name': 'No Baseline Project', 'is_tj_enabled': True})
         # Should not raise even though scenario_ids has no baseline flagged.
         project._sync_gantt_dates()
+
+
+class TestRescheduleImportPreservesTaskStructure(TransactionCase):
+    """El reimport del CSV de un reschedule (_import_scenario_csv +
+    _sync_gantt_dates) es un camino de código totalmente distinto del
+    import externo de .tjp (insight_import_wizard.action_import, ver
+    test_reimport_replaces_previous_tasks_and_milestones y las pruebas de
+    `depends`/`precedes` en test_import_wizard.py — ESE sí reemplaza
+    tareas/hitos/dependencias por completo). Acá se espera lo contrario:
+    un reschedule solo debe tocar insight.task.schedule y, para el
+    escenario baseline, date_deadline/planned_date_begin/user_ids del
+    project.task — nunca debe crear/borrar tareas, ni tocar depend_on_ids
+    o parent_id, ni siquiera cuando una tarea del proyecto no aparece en
+    el CSV devuelto por TJ3 (ver bug real de v17.0.9.7.16/.17: una tarea
+    ausente del .tjp exportado no implica que deba dejar de existir en
+    Odoo)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Reschedule Structure Project',
+            'is_tj_enabled': True,
+        })
+        cls.baseline = cls.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        })
+        cls.parent = cls.env['project.task'].create({'name': 'Parent', 'project_id': cls.project.id})
+        cls.child = cls.env['project.task'].create({
+            'name': 'Child', 'project_id': cls.project.id, 'parent_id': cls.parent.id,
+        })
+        cls.blocker = cls.env['project.task'].create({'name': 'Blocker', 'project_id': cls.project.id})
+        cls.dependent = cls.env['project.task'].create({
+            'name': 'Dependent', 'project_id': cls.project.id,
+            'depend_on_ids': [(6, 0, [cls.blocker.id])],
+        })
+        cls.not_in_csv = cls.env['project.task'].create({'name': 'Not in CSV', 'project_id': cls.project.id})
+
+    def _csv(self):
+        """Deliberadamente NO incluye self.not_in_csv — simula una tarea
+        que TJ3 no declaró en su .tjp exportado (ej.: archivada, ver el fix
+        de v17.0.9.7.17), para confirmar que su ausencia del reporte no
+        gatilla ningún borrado del lado Odoo."""
+        header = '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness"'
+        rows = [
+            f'"t{task.id}";"1";"Task";"2024-01-01";"{end}";"5.0d";"5.0d";"";"0"'
+            for task, end in (
+                (self.parent, '2024-01-10'), (self.child, '2024-01-05'),
+                (self.blocker, '2024-01-03'), (self.dependent, '2024-01-08'),
+            )
+        ]
+        return '\n'.join([header] + rows) + '\n'
+
+    def test_reschedule_import_does_not_delete_tasks_missing_from_the_csv(self):
+        self.project._import_scenario_csv(self._csv(), self.baseline)
+        self.project._sync_gantt_dates()
+        self.assertTrue(self.not_in_csv.exists())
+        self.assertTrue(self.not_in_csv.active)
+
+    def test_reschedule_import_does_not_create_or_remove_tasks(self):
+        before_ids = set(self.project.task_ids.ids)
+        self.project._import_scenario_csv(self._csv(), self.baseline)
+        self.project._sync_gantt_dates()
+        self.assertEqual(set(self.project.task_ids.ids), before_ids)
+
+    def test_reschedule_import_preserves_dependencies(self):
+        self.project._import_scenario_csv(self._csv(), self.baseline)
+        self.project._sync_gantt_dates()
+        self.assertIn(self.blocker, self.dependent.depend_on_ids)
+        self.assertEqual(len(self.dependent.depend_on_ids), 1)
+
+    def test_reschedule_import_preserves_task_tree(self):
+        self.project._import_scenario_csv(self._csv(), self.baseline)
+        self.project._sync_gantt_dates()
+        self.assertEqual(self.child.parent_id, self.parent)

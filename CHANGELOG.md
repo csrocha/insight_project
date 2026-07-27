@@ -9,6 +9,46 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.18] - 2026-07-27
+
+### Prompt
+
+> Consulta, cuando se recupera el CSV luego del rescheduling, actualizas
+> las tareas eliminando dependencias? O eliminando las tareas que no
+> aparecen? O solo modificas cuando comienza y cuando termina, y la
+> asignación de recursos? Te lo pregunto porque en la importación si
+> espero que ocurra eso, pero no en el rescheduling.
+>
+> Crea tests para evaluar justamente el resultado de la importación y de
+> la actualización posterior al rescheduling.
+
+### Agregado
+
+- **`TestRescheduleImportPreservesTaskStructure`** (`tests/test_tjp_schedule_import.py`):
+  fija explícitamente que `_import_scenario_csv`/`_sync_gantt_dates` (reimport
+  del CSV que devuelve TJ3 tras un reschedule) es un camino de código
+  totalmente distinto de `insight_import_wizard.action_import` (import
+  externo de `.tjp`, que sí reemplaza tareas/hitos/dependencias por completo
+  — ver `test_reimport_replaces_previous_tasks_and_milestones` y las pruebas
+  de `depends`/`precedes` en `tests/test_import_wizard.py`). Cuatro tests
+  nuevos, con un fixture de proyecto con tarea padre/hija, una dependencia,
+  y una tarea deliberadamente ausente del CSV (simulando el escenario del
+  fix de v17.0.9.7.17 — tarea archivada que TJ3 no declara):
+  - una tarea ausente del CSV no se borra ni se archiva,
+  - el reimport no crea ni elimina ningún `project.task` del proyecto,
+  - `depend_on_ids` no se toca,
+  - `parent_id`/la jerarquía de tareas no se toca.
+
+### Discusión de diseño
+
+- No se agregó ningún test nuevo del lado del import externo (wizard) — la
+  cobertura de "el reimport reemplaza todo" ya existía y es suficiente
+  (`test_reimport_replaces_previous_tasks_and_milestones` +
+  `test_fs_dependency_populates_depend_on_ids`/`test_ss_dependency_creates_override`/
+  `test_precedes_creates_ff_override`); el gap real estaba únicamente del
+  lado del reschedule, que no tenía ningún test afirmando la ausencia de
+  estos efectos secundarios.
+
 ## [17.0.9.7.17] - 2026-07-27
 
 ### Prompt
