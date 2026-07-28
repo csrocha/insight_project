@@ -660,6 +660,45 @@ class TestTjpTaskBlock(TransactionCase):
         text = '\n'.join(lines)
         self.assertNotIn('depends', text)
 
+    def test_cross_project_ancestor_outside_scope_not_emitted_as_dependency(self):
+        """Bug real (2026-07-27): project.task.parent_id no exige el mismo
+        project_id que el hijo (Odoo permite subtareas cross-proyecto). Si
+        el padre real de un blocker pertenece a un proyecto que no forma
+        parte del recordset que se está exportando (`self`, ver
+        _generate_tjp/_tj_portfolio_recordset), ese padre nunca se declara
+        como `task` en este .tjp — mismo síntoma que el ancestro archivado,
+        pero por alcance del export en vez de por estado. Reproducido
+        contra un .tjp real exportado desde producción ("has unknown
+        depends" en tj3-ms)."""
+        other_project = self.env['project.project'].create({'name': 'Otro proyecto'})
+        cross_parent = self.env['project.task'].create({
+            'name': 'Padre cross-proyecto', 'project_id': other_project.id,
+        })
+        blocker = self._task(name='Bloqueante', parent_id=cross_parent.id)
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        lines = self.project._tjp_task_block(dependent)
+        self.assertNotIn('depends', '\n'.join(lines))
+
+    def test_cross_project_ancestor_within_scope_is_emitted_and_resolved(self):
+        """Con el proyecto del ancestro incluido en el recordset combinado
+        (ver _tj_portfolio_recordset para el caso real: portfolio 'en
+        progreso'), la subtarea cross-proyecto sí se declara como `task` y
+        el `depends` se resuelve contra su path real en vez de omitirse."""
+        other_project = self.env['project.project'].create({'name': 'Otro proyecto'})
+        cross_parent = self.env['project.task'].create({
+            'name': 'Padre cross-proyecto', 'project_id': other_project.id,
+        })
+        blocker = self._task(name='Bloqueante', parent_id=cross_parent.id)
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        combined = self.project | other_project
+
+        parent_lines = '\n'.join(combined._tjp_task_block(cross_parent, depth=0))
+        self.assertIn(f'task t{cross_parent.id}', parent_lines)
+        self.assertIn(f'  task t{blocker.id}', parent_lines)
+
+        dependent_lines = '\n'.join(combined._tjp_task_block(dependent))
+        self.assertIn(f'  depends !t{cross_parent.id}.t{blocker.id}', dependent_lines)
+
     def test_dependency_multiple_blockers_share_task_type(self):
         """tj_dependency_type es el default de la tarea: sin overrides por
         arista (dependency_type_ids), se aplica igual a todos sus

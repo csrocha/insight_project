@@ -9,6 +9,71 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.19] - 2026-07-27
+
+### Prompt
+
+> Operación no válida
+>
+> Error del microservicio TJ3: 422 Client Error: unknown for url:
+> https://insight-tj3-ms-prod-822951196286.us-central1.run.app/schedule
+> /tmp/tmpnwtml38f/project.tjp:90: Error in scenario p17_plan: Task
+> t1937.t1938 has unknown depends t1911.t1924
+
+### Discusión de diseño
+
+Reproducido a partir del `.tjp` real exportado desde producción: `t1911` (y
+toda su descendencia, `t1912/t1918/t1924/t1928/t1932-t1936`) nunca aparece
+como bloque `task { ... }` en el archivo, solo como destino de `depends` —
+mismo síntoma que el bug de ancestro archivado ya corregido, pero con una
+causa distinta.
+
+El propio `.tjp` confirma que esas tareas comparten `project_id` con el
+proyecto exportado (`_tjp_task_abs_path`/`_tjp_dep_ancestors_active` solo
+las incluyen en el path si el `project_id` coincide con el del nodo
+anterior). Lo que rompe la recursión es que `t1911.parent_id` apunta a una
+tarea de OTRO proyecto Odoo — Odoo permite subtareas cross-proyecto sin
+sincronizar `project_id` (`project.task.parent_id` no tiene dominio
+same-project) — así que `t1911` nunca es raíz (tiene padre) ni se descubre
+como hijo de nada dentro del árbol de este proyecto.
+
+Confirmado con el usuario que esto es intencional, no un dato corrupto: el
+milestone `m32 "Flujo de Coyuntural iniciado"` depende a propósito de
+tareas de otro proyecto ("Flujo Coyuntural"), y el diseño de
+`action_run_schedule`/`_tj_portfolio_recordset` ya combina todos los
+proyectos "en progreso" en una sola corrida precisamente para que este tipo
+de dependencia cross-proyecto compita por los mismos recursos y se resuelva
+bien. El bug real es que `_tjp_task_block` (el filtro de `child_ids`),
+`_tjp_dep_ancestors_active` y `_tjp_task_abs_path` gateaban con
+`project_id == project_id del nodo anterior` en vez de "¿el proyecto forma
+parte del recordset combinado que se está exportando?" — rompiendo la
+subtarea cross-proyecto incluso cuando ambos proyectos están en el
+portfolio combinado.
+
+### Corregido
+
+- **`_tjp_task_block`** (`models/project_project.py`): el filtro de
+  `child_ids` para descender en la recursión ahora chequea
+  `t.project_id in self` (el recordset combinado del export) en vez de
+  `t.project_id == task.project_id` (el del padre inmediato) — permite que
+  una subtarea cross-proyecto se declare bajo su padre real cuando ambos
+  proyectos están incluidos en la corrida.
+- **`_tjp_dep_ancestors_active`/`_tjp_task_abs_path`** (`models/project_project.py`):
+  pasan de `@staticmethod` a métodos de instancia y climban la cadena de
+  ancestros comprobando pertenencia a `self`, no igualdad puntual de
+  `project_id`. Si la cadena se corta contra un proyecto que no forma parte
+  del recordset exportado (o el proyecto pariente está fuera del portfolio
+  "en progreso"), el ancestro se trata como inválido — la dependencia se
+  omite igual que con un ancestro archivado, en vez de emitir un `depends`
+  que TJ3 rechaza con "has unknown depends".
+- Filtro de dependencias en `_tjp_task_block`: `dep.project_id not in self`
+  reemplaza `dep.project_id != task.project_id`, por la misma razón.
+- Tests nuevos (`tests/test_tjp_export.py`):
+  `test_cross_project_ancestor_outside_scope_not_emitted_as_dependency`
+  (single-project export: se omite, no crashea) y
+  `test_cross_project_ancestor_within_scope_is_emitted_and_resolved`
+  (recordset combinado: se declara y el `depends` resuelve el path real).
+
 ## [17.0.9.7.18] - 2026-07-27
 
 ### Prompt

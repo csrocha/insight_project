@@ -850,7 +850,7 @@ class ProjectProject(models.Model):
             lines.append(f'{ind}  chargeset {self._TJP_COST_ACCOUNT_ID}')
 
         child_tasks = task.child_ids.filtered(
-            lambda t: t.project_id == task.project_id
+            lambda t: t.project_id in self
         ).sorted('sequence')
 
         if not child_tasks:
@@ -887,9 +887,15 @@ class ProjectProject(models.Model):
         # (One2many, filtrados por active_test al declarar tareas más
         # arriba), no excluye tareas archivadas. Sin este filtro, una
         # bloqueante archivada genera un `depends` hacia un id que TJ3
-        # nunca ve declarado ("has unknown depends").
+        # nunca ve declarado ("has unknown depends"). El chequeo de
+        # `project_id` es contra `self` (el recordset combinado que se está
+        # exportando, ver _generate_tjp/_tj_portfolio_recordset), no contra
+        # `task.project_id`: una dependencia hacia otro proyecto del
+        # portfolio es válida (subtarea cross-proyecto, ver
+        # _tjp_dep_ancestors_active) — solo se descarta si ese proyecto ni
+        # siquiera forma parte de esta corrida.
         for dep in task.depend_on_ids.filtered('active'):
-            if dep.project_id != task.project_id:
+            if dep.project_id not in self:
                 continue
             if not self._tjp_dep_ancestors_active(dep):
                 continue
@@ -1594,30 +1600,39 @@ class ProjectProject(models.Model):
     def _tjp_milestone_id(milestone):
         return f'm{milestone.id}'
 
-    @staticmethod
-    def _tjp_dep_ancestors_active(dep):
-        """True si toda la cadena de ancestros de `dep` (dentro de su mismo
-        proyecto) está activa. `dep` mismo ya se filtra con `.filtered('active')`
-        antes de llegar acá, pero `_tjp_task_abs_path` arma el path caminando
-        `parent_id` crudo, sin chequear `active` en cada ancestro — si un
-        ancestro está archivado (ej.: tarea contenedora marcada terminada),
-        la recursión de `_generate_tjp` nunca desciende a sus hijos (aunque
-        sigan activos) y ese padre nunca se declara como `task` en el .tjp.
-        El path resultante (ej. `t_padre.t_dep`) apunta a un anidamiento que
+    def _tjp_dep_ancestors_active(self, dep):
+        """True si toda la cadena de ancestros de `dep` (dentro del alcance
+        de este export — `self`, ver _generate_tjp/_tj_portfolio_recordset)
+        está activa y termina en una raíz realmente renderizable. `dep`
+        mismo ya se filtra con `.filtered('active')` antes de llegar acá,
+        pero `_tjp_task_abs_path` arma el path caminando `parent_id` crudo,
+        sin chequear `active` en cada ancestro — si un ancestro está
+        archivado (ej.: tarea contenedora marcada terminada), la recursión
+        de `_generate_tjp` nunca desciende a sus hijos (aunque sigan
+        activos) y ese padre nunca se declara como `task` en el .tjp. El
+        path resultante (ej. `t_padre.t_dep`) apunta a un anidamiento que
         TJ3 nunca vio declarado → "has unknown depends", aunque `dep` en sí
         esté activo. Bug real reproducido con una tarea + su hito dados por
         completados y archivados, cuya sub-tarea seguía activa y bloqueando
-        otra tarea del proyecto."""
-        project_id = dep.project_id.id
+        otra tarea del proyecto.
+
+        Mismo síntoma, causa distinta: una subtarea cross-proyecto (Odoo
+        permite que `parent_id` pertenezca a un proyecto distinto del
+        propio `project_id`, ver project.task) cuyo padre real queda fuera
+        de `self` tampoco se declara nunca como `task` — la cadena de
+        ancestros nunca llega a una raíz renderizable (`not parent_id`)
+        dentro del alcance exportado, se corta contra un proyecto que ni
+        forma parte de esta corrida. En ese caso el `while` termina con `t`
+        todavía con valor (no una raíz real) y hay que tratarlo igual que
+        un ancestro archivado."""
         t = dep.parent_id
-        while t and t.project_id.id == project_id:
+        while t and t.project_id in self:
             if not t.active:
                 return False
             t = t.parent_id
-        return True
+        return not t
 
-    @staticmethod
-    def _tjp_task_abs_path(dep, owner=None):
+    def _tjp_task_abs_path(self, dep, owner=None):
         """Referencia a `dep` tal como la resuelve TJ3 en un `depends`/
         `precedes` declarado por `owner`. Bug real encontrado y confirmado
         empíricamente contra el binario real (tj3-ms v3.8.4): TJ3 no
@@ -1635,18 +1650,22 @@ class ProjectProject(models.Model):
         raíz (confirmado también empíricamente: `depends !b` con owner a
         profundidad 1 agenda correctamente). `owner=None` (milestones, que
         siempre son de nivel raíz) preserva el comportamiento de siempre:
-        profundidad 0 → un solo '!'."""
+        profundidad 0 → un solo '!'.
+
+        La cadena hacia la raíz (para `dep` y para `owner`) se camina
+        mientras el ancestro esté dentro de `self` — el recordset combinado
+        de este export — en vez de exigir el mismo `project_id` puntual del
+        nodo anterior, para soportar subtareas cross-proyecto dentro del
+        mismo portfolio (ver _tjp_dep_ancestors_active)."""
         depth = 0
         if owner:
             t = owner
-            project_id = owner.project_id.id
-            while t.parent_id and t.parent_id.project_id.id == project_id:
+            while t.parent_id and t.parent_id.project_id in self:
                 depth += 1
                 t = t.parent_id
         parts = []
         t = dep
-        project_id = dep.project_id.id
-        while t and t.project_id.id == project_id:
+        while t and t.project_id in self:
             parts.append(f't{t.id}')
             t = t.parent_id
         return '!' * (depth + 1) + '.'.join(reversed(parts))
