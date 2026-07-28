@@ -9,6 +9,99 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.21] - 2026-07-28
+
+### Prompt
+
+> Estamos repitiendo el error. Necesito otra forma de resolver el problema.
+> [.tjp real regenerado con v17.0.9.7.20, idéntico byte a byte al anterior
+> salvo la fecha] [...] Una vez que hayas interpretado todo veamos como
+> encarar este problema, y no supongas nada. Esto ya lo hicimos muchas
+> veces y escribimos muchos casos de tests (si, leelos también), que
+> parece no identifican el error. [CSV de las 603 tareas activas + CSV de
+> todas las tareas, activas e inactivas]
+>
+> [...] Confirmame lo que te digo. Lo que tenemos es una inconsistencia de
+> estados de las tareas. Tenemos tareas inactivas con subtareas (en algún
+> nivel) activas. [...] esto se tiene que tratar de otra manera, no desde
+> el scheduler sino que tiene que resolverse antes de ejecutarlo. Entonces,
+> si el scheduler ejecuta primero tiene que validar que no haya tareas con
+> esas condiciones, y si las hay tiene que crear una actividad que
+> implique resolver esa inconsistencia. [...] esa actividad le tiene que
+> permitir a la lista de tareas involucradas.
+
+### Discusión de diseño
+
+El fix de v17.0.9.7.19 (subtareas cross-proyecto) no resolvía el error real
+porque el diagnóstico de esa versión era incorrecto para este caso —
+confirmado recién al cruzar el `.tjp` de producción con un CSV real de
+`project.task` (activas + archivadas): `t1911` ("Eje 0: Ingesta
+Automatizada") es una tarea raíz **del mismo proyecto**, **archivada**
+(`active=False`), no de otro proyecto. Sus 4 ramas (`1912`/`1918`/`1924`
+archivadas, `1928` con 5 subtareas activas en curso colgando debajo) — un
+caso simple de ancestro archivado con descendencia activa.
+
+Reconstruyendo ese shape exacto con IDs reales en un test
+(`TestTjpSelfContainment`, `tests/test_tjp_export.py`) se encontró que
+`_tjp_task_block` (que ya sabía omitir esto vía `_tjp_dep_ancestors_active`)
+funcionaba bien, pero **`_tjp_milestone_block` nunca tenía ese chequeo** —
+seguía emitiendo `depends` hacia un ancestro archivado sin verificar si
+llegaba a una raíz renderizable. Fix puntual: agregar el mismo filtro
+(`_tjp_dep_ancestors_active`) al armado de `dep_tasks` del milestone.
+
+Pero corregir eso reveló algo más grave: con el ancestro archivado
+omitido correctamente, la rama activa completa ("Configuración de
+Metadatos del Flujo" + sus 5 subtareas en curso) **desaparecía del `.tjp`
+por completo, sin ningún error** — trabajo real invisible para el
+scheduler. El usuario confirmó el diagnóstico: es una inconsistencia de
+datos (Odoo permite archivar una tarea sin tocar sus subtareas, ni hay
+`_sql_constraints` que lo impida) que debe resolverse a mano ANTES de
+programar, no enmascararse caminando "transparente" por el archivado
+dentro del exportador. Decisiones tomadas con el usuario: (1) bloquear la
+corrida completa hasta resolverla (no solo omitir la rama), (2) listar el
+subárbol activo COMPLETO (cualquier profundidad) en el aviso, (3) una
+actividad por grupo inconsistente (no una agregada por proyecto).
+
+Bug adicional encontrado implementando el bloqueo: `assertRaises` del test
+runner de Odoo envuelve el bloque en un `SAVEPOINT` que se revierte al
+capturar la excepción esperada — simula lo que pasa en un request real
+cuando termina en `UserError` (cualquier escritura de esa misma
+transacción se revierte junto con el error), así que la actividad recién
+creada se perdía junto con el `raise`. Mismo mecanismo ya documentado en
+`feedback_odoo_test_cursor_rollback_fragility` para otro módulo: se
+necesita un `self.env.cr.commit()` real antes del `raise`, gateado por
+`odoo_config['test_enable']` (no por `registry.in_test_mode()`, que da
+`False` bajo el test runner de este repo).
+
+### Corregido
+
+- **`_tjp_milestone_block`** (`models/project_project.py`): filtra
+  `dep_tasks` también por `_tjp_dep_ancestors_active`, igual que
+  `_tjp_task_block` — un milestone enlazado a una tarea con un ancestro
+  archivado (o fuera del recordset combinado) ya no emite un `depends`
+  hacia un anidamiento nunca declarado.
+
+### Agregado
+
+- **`_tj_archived_ancestor_groups`** (`models/project_project.py`):
+  detecta, dentro del recordset combinado de la corrida, cada ancestro
+  archivado con descendencia activa (subárbol completo, vía `child_of`) —
+  reporta solo el límite superior de cada tramo archivado contiguo.
+- **`_tj_flag_archived_ancestor_inconsistency`** (`models/project_task.py`):
+  posteo + actividad (`mail.mail_activity_data_todo`, asignada al
+  responsable del proyecto) anclada en la tarea archivada, con link a cada
+  descendiente activo involucrado.
+- **`action_run_schedule`**: pre-flight bloqueante antes de exigir config
+  del microservicio — si hay ancestros archivados con descendencia activa,
+  crea una actividad por grupo y lanza `UserError` sin llegar a generar el
+  `.tjp` ni llamar a TJ3.
+- Tests nuevos: `TestTjpSelfContainment` (`tests/test_tjp_export.py`,
+  reproduce el shape real de producción con IDs 1911-1938 y valida que
+  todo `depends`/`precedes` referenciado tenga su `task {}` declarado) y
+  `TestArchivedAncestorPreflight` (`tests/test_portfolio_scheduling.py`,
+  3 tests: bloqueo + mensaje, persistencia de la actividad llamando al
+  helper directo, no-bloqueo cuando no hay inconsistencia).
+
 ## [17.0.9.7.20] - 2026-07-27
 
 ### Prompt

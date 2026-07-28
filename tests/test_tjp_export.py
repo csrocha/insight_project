@@ -8,6 +8,7 @@ summary points, a resource with no linked hr.employee, and a root scenario
 with nested alternates — so the generator's textual output stays pinned
 even though the project content used here is synthetic.
 """
+import re
 from datetime import date
 from unittest.mock import patch
 
@@ -1307,3 +1308,87 @@ class TestActionExportTjp(TransactionCase):
         self.assertTrue(attachment)
         content = attachment.raw.decode('utf-8')
         self.assertIn(f'project p{project.id} "Enabled TJ Project"', content)
+
+
+class TestTjpSelfContainment(TransactionCase):
+    """Caso real de producción (2026-07-28, ver memoria
+    project_insight_project_tjp_cross_project_depends_bug): "Eje 0" es un
+    eje COMPLETO y ARCHIVADO (active=False), pero una de sus 4 ramas
+    ("Configuración de Metadatos...") sigue activa y en curso, colgando
+    debajo de un padre archivado. Otro eje activo ("Eje I") depende
+    directamente de una tarea de una rama HERMANA ya archivada ("Tesi Gaia a
+    BigQuery"). No es un caso cross-proyecto (las dos hipótesis anteriores,
+    ya corregidas en v17.0.9.7.19/.20, no aplican acá: todo vive en el mismo
+    proyecto) — es el caso de ancestro archivado que _tjp_dep_ancestors_active
+    ya debería cubrir. Reconstruido con los IDs reales (1911-1938) del .tjp
+    de producción para que el shape sea idéntico al real, no una
+    aproximación."""
+
+    @staticmethod
+    def _declared_and_referenced_ids(tjp_text):
+        """Todo id que aparece del lado derecho de un `task <id> "..." {`
+        está declarado; todo id (sin bangs) al final de un `depends`/
+        `precedes` está referenciado. TJ3 rechaza el archivo si algún
+        referenciado no está declarado ("has unknown depends")."""
+        declared = set(re.findall(r'^\s*task (\S+) "', tjp_text, re.MULTILINE))
+        referenced = set()
+        for line in tjp_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('depends ') or stripped.startswith('precedes '):
+                path = stripped.split()[1].lstrip('!')
+                referenced.add(path)
+        return declared, referenced
+
+    def test_archived_axis_with_live_branch_and_dead_sibling_dependency(self):
+        project = self.env['project.project'].create({
+            'name': 'Repro Prod 2026-07-28', 'is_tj_enabled': True,
+        })
+        # Sin default_project_id en el contexto, project.task.default_get
+        # trata a la tarea como "sin proyecto" para el default de user_ids
+        # y se auto-asigna el usuario actual (ver project/models/
+        # project_task.py:778-781) — ruido ajeno al bug que se está
+        # reproduciendo, evitado pasando el contexto real que usa la UI.
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        eje0 = Task.create({
+            'name': 'Eje 0: Ingesta Automatizada', 'project_id': project.id, 'active': False,
+        })
+        Task.create({
+            'name': 'Implementación de Polling', 'project_id': project.id,
+            'parent_id': eje0.id, 'active': False,
+        })
+        Task.create({
+            'name': 'Adaptación de Módulo en Odoo', 'project_id': project.id,
+            'parent_id': eje0.id, 'active': False,
+        })
+        tesi_gaia = Task.create({
+            'name': 'Tesi Gaia a BigQuery', 'project_id': project.id,
+            'parent_id': eje0.id, 'active': False,
+        })
+        config_meta = Task.create({
+            'name': 'Configuración de Metadatos del Flujo', 'project_id': project.id,
+            'parent_id': eje0.id,
+        })
+        config_child_active = Task.create({
+            'name': 'Crear calculations para variables', 'project_id': project.id,
+            'parent_id': config_meta.id,
+        })
+        eje1 = Task.create({
+            'name': 'Eje I: Industrialización de Datos', 'project_id': project.id,
+        })
+        Task.create({
+            'name': 'Definición de Estándares Oráculo', 'project_id': project.id,
+            'parent_id': eje1.id, 'depend_on_ids': [(6, 0, [tesi_gaia.id])],
+        })
+        milestone = self.env['project.milestone'].create({
+            'name': 'Flujo de Coyuntural iniciado', 'project_id': project.id,
+        })
+        config_child_active.milestone_id = milestone.id
+
+        tjp = project._generate_tjp()
+        declared, referenced = self._declared_and_referenced_ids(tjp)
+        dangling = referenced - declared
+        self.assertFalse(
+            dangling,
+            f'.tjp con referencias sin declarar (TJ3 rechaza con "has unknown '
+            f'depends"): {dangling}\n\n{tjp}',
+        )

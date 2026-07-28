@@ -4,6 +4,7 @@ draft/evaluation/progress from project_improve, _tj_portfolio_recordset,
 multi-project _generate_tjp/_tj_project_users, and the write-back asymmetry
 in _import_all_schedules — see BACKLOG.md item 3 / memoria
 project_portfolio_scheduling_states)."""
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase
 
 
@@ -224,3 +225,92 @@ class TestImportAllSchedulesPortfolio(TransactionCase):
             ('category', '=', 'insight_project.evaluation_impact_report'),
         ])
         self.assertEqual(count, 0)
+
+
+class TestArchivedAncestorPreflight(TransactionCase):
+    """Bug real (2026-07-28, ver memoria
+    project_insight_project_tjp_cross_project_depends_bug): Odoo permite
+    archivar una tarea sin archivar sus subtareas, dejando una rama activa
+    invisible para el schedule TJ3 sin ningún aviso. Decisión del usuario:
+    bloquear la corrida completa (no enmascararlo en el exportador) y dejar
+    una actividad por grupo con el subárbol activo completo involucrado."""
+
+    def _project_with_scenario(self, name):
+        project = self.env['project.project'].create({
+            'name': name, 'is_tj_enabled': True,
+        })
+        self.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': project.id, 'is_baseline': True,
+        })
+        return project
+
+    def test_archived_ancestor_with_active_descendants_blocks_schedule(self):
+        """Solo chequea la excepción (tipo + mensaje), no la persistencia de
+        la actividad: `assertRaises` en el test runner de Odoo envuelve el
+        bloque en un SAVEPOINT que se revierte al capturar la excepción
+        esperada (odoo/tests/common.py) — simula lo que pasa en un request
+        real cuando termina en UserError, así que revertiría también la
+        actividad/mensaje creados en la misma llamada. Por eso
+        action_run_schedule hace un commit real (gateado por test_enable,
+        nunca ejercido bajo test — ver
+        feedback_odoo_test_cursor_rollback_fragility) antes de este raise; la
+        persistencia de la actividad se prueba aparte, llamando al helper
+        directo (test_flag_helper_creates_activity_with_full_active_subtree),
+        sin pasar por ningún raise."""
+        project = self._project_with_scenario('Preflight Blocked Project')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        archived_root = Task.create({
+            'name': 'Eje archivado', 'project_id': project.id, 'active': False,
+        })
+        Task.create({
+            'name': 'Nieta activa colgando', 'project_id': project.id,
+            'parent_id': archived_root.id,
+        })
+
+        with self.assertRaises(UserError) as cm:
+            project.action_run_schedule(interactive=False)
+        self.assertIn('archivada', str(cm.exception))
+        self.assertNotIn('microservicio', str(cm.exception))
+
+    def test_flag_helper_creates_activity_with_full_active_subtree(self):
+        """El helper en sí (llamado directo, sin pasar por ningún raise) sí
+        deja probar la persistencia real de la actividad/mensaje."""
+        project = self._project_with_scenario('Flag Helper Project')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        archived_root = Task.create({
+            'name': 'Eje archivado', 'project_id': project.id, 'active': False,
+        })
+        child = Task.create({
+            'name': 'Hija activa', 'project_id': project.id, 'parent_id': archived_root.id,
+        })
+        grandchild = Task.create({
+            'name': 'Nieta activa', 'project_id': project.id, 'parent_id': child.id,
+        })
+
+        combined = project._tj_portfolio_recordset()
+        groups = combined._tj_archived_ancestor_groups()
+        self.assertEqual(len(groups), 1)
+        root, active_descendants = groups[0]
+        self.assertEqual(root, archived_root)
+        self.assertEqual(active_descendants, child | grandchild)
+
+        root._tj_flag_archived_ancestor_inconsistency(active_descendants)
+
+        activity = self.env['mail.activity'].search([
+            ('res_model', '=', 'project.task'), ('res_id', '=', archived_root.id),
+        ])
+        self.assertTrue(activity, 'Debe crear una actividad en la tarea archivada')
+        self.assertIn(child.name, activity.note or '')
+        self.assertIn(grandchild.name, activity.note or '')
+
+    def test_no_archived_inconsistency_does_not_block_on_preflight(self):
+        """Sin ninguna tarea archivada con descendencia activa, el pre-flight
+        no debe frenar nada — la corrida sigue hasta el siguiente chequeo
+        real (acá, config del microservicio, que no está seteada en test)."""
+        project = self._project_with_scenario('Preflight OK Project')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        Task.create({'name': 'Tarea normal', 'project_id': project.id})
+
+        with self.assertRaises(UserError) as cm:
+            project.action_run_schedule(interactive=False)
+        self.assertIn('microservicio', str(cm.exception))

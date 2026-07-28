@@ -11,6 +11,7 @@ from markupsafe import Markup
 
 from odoo import _, fields, models
 from odoo.exceptions import UserError
+from odoo.tools import config as odoo_config
 
 
 class UnscheduledTasksError(UserError):
@@ -116,6 +117,46 @@ class ProjectProject(models.Model):
         if not self.scenario_ids:
             raise UserError(_('Defina al menos un escenario antes de ejecutar el schedule.'))
 
+        # Recordset combinado: depende del estado de self (draft => self
+        # solo, sin competir por recursos con nadie; evaluation/progress =>
+        # todos los 'en progreso' + self) — ver _tj_portfolio_recordset.
+        combined = self._tj_portfolio_recordset()
+        # Pre-flight bloqueante, antes de exigir config del microservicio
+        # (2026-07-28, ver memoria
+        # project_insight_project_tjp_cross_project_depends_bug): Odoo
+        # permite archivar una tarea sin tocar sus subtareas — ni hay
+        # constraint que lo impida — así que un ancestro archivado con
+        # descendencia activa deja esa rama sin declarar en el .tjp
+        # (_generate_tjp solo desciende desde raíces activas) y cualquier
+        # depends/milestone que la referencie revienta con "has unknown
+        # depends" en TJ3. Es una inconsistencia de datos, no algo que el
+        # exportador deba enmascarar caminando "transparente" por el
+        # archivado: se resuelve a mano (desarchivar o reasignar), así que
+        # se bloquea la corrida completa y se deja una actividad por grupo
+        # con la lista de tareas activas involucradas.
+        archived_groups = combined._tj_archived_ancestor_groups()
+        if archived_groups:
+            for root, active_descendants in archived_groups:
+                root._tj_flag_archived_ancestor_inconsistency(active_descendants)
+            # Commit real gateado por test_enable, no por
+            # registry.in_test_mode() (da False bajo el test runner de este
+            # repo, que aísla cada test con un SAVEPOINT propio en vez de un
+            # TestCursor — ver feedback_odoo_test_cursor_rollback_fragility):
+            # sin este commit, el `raise` de acá abajo revierte también la
+            # actividad/mensaje recién creados (mismo mecanismo con el que
+            # Odoo revierte cualquier escritura de un request que termina en
+            # UserError) — el aviso solo tiene sentido si sobrevive al error
+            # que dispara.
+            if not bool(odoo_config['test_enable']):
+                self.env.cr.commit()
+            raise UserError(_(
+                'Hay %(n)d tarea(s) archivada(s) con subtareas activas colgando '
+                'debajo — quedan invisibles para el schedule TJ3. Se creó una '
+                'actividad en cada una con el detalle; resolvé desarchivando la '
+                'tarea o reasignando esas subtareas a un padre activo antes de '
+                'programar.'
+            ) % {'n': len(archived_groups)})
+
         ICP = self.env['ir.config_parameter'].sudo()
         url = ICP.get_param('insight_project.tj_microservice_url')
         if not url:
@@ -125,13 +166,9 @@ class ProjectProject(models.Model):
         except (ValueError, TypeError):
             timeout = 120
 
-        # Recordset combinado: depende del estado de self (draft => self
-        # solo, sin competir por recursos con nadie; evaluation/progress =>
-        # todos los 'en progreso' + self) — ver _tj_portfolio_recordset.
         # _call_tj_microservice sigue invocándose sobre `self` (no
         # `combined`): solo postea errores al chatter del proyecto que
         # disparó la corrida, no a todo el portfolio.
-        combined = self._tj_portfolio_recordset()
         tjp_content = combined._generate_tjp(active_project=self)
         try:
             response_data = self._call_tj_microservice(url.rstrip('/'), tjp_content, timeout)
@@ -190,6 +227,35 @@ class ProjectProject(models.Model):
             return self
         progress_projects = self.search([('state', '=', 'progress')])
         return progress_projects | self
+
+    def _tj_archived_ancestor_groups(self):
+        """Grupos `(tarea_archivada_raíz, descendientes_activos)` dentro del
+        alcance de `self` (recordset combinado, ver _tj_portfolio_recordset).
+        Odoo permite archivar una tarea sin archivar (ni bloquear) sus
+        subtareas — ni siquiera hay un `_sql_constraints` en project.task
+        que lo impida — así que un ancestro archivado con descendencia
+        activa deja esa rama sin ningún `task {}` declarado en el .tjp (la
+        recorrida de _generate_tjp solo baja desde raíces activas): es una
+        inconsistencia de datos, no un caso que el exportador deba resolver
+        caminando "transparente" por el archivado.
+
+        `descendientes_activos` es el subárbol activo COMPLETO (cualquier
+        profundidad), vía `child_of`. Se reporta solo el límite superior de
+        cada tramo archivado contiguo (se salta un archivado cuyo padre
+        también esté archivado) para no duplicar el mismo subárbol en cada
+        nivel."""
+        Task = self.env['project.task'].with_context(active_test=False)
+        all_tasks = Task.search([('project_id', 'in', self.ids)])
+        archived_roots = all_tasks.filtered(
+            lambda t: not t.active and (not t.parent_id or t.parent_id.active)
+        )
+        groups = []
+        for root in archived_roots:
+            descendants = Task.search([('id', 'child_of', root.id)]) - root
+            active_descendants = descendants.filtered('active')
+            if active_descendants:
+                groups.append((root, active_descendants))
+        return groups
 
     def _cron_run_portfolio_schedule(self):
         """Recorrido diario (ver data/insight_cron.xml): recalcula juntos
@@ -986,11 +1052,23 @@ class ProjectProject(models.Model):
     def _tjp_milestone_block(self, milestone):
         """Un project.milestone se exporta como su propia tarea TJP
         sintética de 0 esfuerzo (`milestone`), separada de las tareas
-        reales, que depende de todas las tareas de este proyecto enlazadas
-        a él (milestone.task_ids). Se omite si no tiene ninguna tarea
-        enlazada en este proyecto: no hay contra qué anclarla en el
-        schedule."""
-        dep_tasks = milestone.task_ids.filtered(lambda t: t.project_id == milestone.project_id)
+        reales, que depende de todas las tareas enlazadas a él
+        (milestone.task_ids) dentro del alcance de este export (`self`, ver
+        _generate_tjp/_tj_portfolio_recordset). Se omite si no queda ninguna
+        tarea enlazada válida: no hay contra qué anclarla en el schedule.
+
+        Bug real (2026-07-28, ver memoria
+        project_insight_project_tjp_cross_project_depends_bug): a diferencia
+        de `_tjp_task_block`, este método NO chequeaba
+        `_tjp_dep_ancestors_active` — un milestone enlazado a una tarea
+        activa colgando de un ancestro archivado (o fuera del recordset
+        combinado) igual emitía su `depends`, apuntando a un anidamiento que
+        `_generate_tjp` nunca declaró como `task` en el .tjp ("has unknown
+        depends"). Reproducido con los IDs reales de producción en
+        tests/test_tjp_export.py::TestTjpSelfContainment."""
+        dep_tasks = milestone.task_ids.filtered(
+            lambda t: t.project_id in self and self._tjp_dep_ancestors_active(t)
+        )
         if not dep_tasks:
             return []
         m_id = self._tjp_milestone_id(milestone)

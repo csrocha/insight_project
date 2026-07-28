@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from markupsafe import Markup
+
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError
 
@@ -102,6 +104,33 @@ class ProjectTask(models.Model):
             ('remaining_hours', '<=', 0),
         ])
         (overdue | over_budget).write({'state': '02_changes_requested'})
+
+    def _tj_flag_archived_ancestor_inconsistency(self, active_descendants):
+        """Posteo + actividad que fuerza a resolver a mano una tarea
+        archivada con descendencia activa (ver
+        project.project._tj_archived_ancestor_groups) antes de poder
+        programar el portfolio — desarchivarla o reasignar esa descendencia
+        a un padre activo. Un `mail.activity` por grupo (no uno agregado por
+        proyecto), anclado en la tarea archivada misma, con el link a cada
+        descendiente activo involucrado."""
+        self.ensure_one()
+        lines = [_(
+            'Esta tarea está archivada pero tiene %(n)d subtarea(s) activa(s) '
+            'colgando debajo (a cualquier profundidad). Mientras no se '
+            'resuelva, esa descendencia queda invisible para el schedule TJ3 '
+            'y el portfolio no se puede programar. Desarchivá esta tarea o '
+            'reasigná esas subtareas a un padre activo:'
+        ) % {'n': len(active_descendants)}]
+        lines += [t._get_html_link() for t in active_descendants]
+        msg = Markup('<br/>').join(lines)
+        self.message_post(body=msg)
+        self.activity_schedule(
+            'mail.mail_activity_data_todo',
+            date_deadline=fields.Date.today(),
+            summary=_('Resolver tarea archivada con subtareas activas'),
+            note=msg,
+            user_id=self.project_id.user_id.id or self.env.user.id,
+        )
 
     def action_reschedule_project(self):
         """Botón de replanificado en kanban/tree de tareas: actúa sobre el
