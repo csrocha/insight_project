@@ -9,6 +9,68 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.20] - 2026-07-27
+
+### Prompt
+
+> Confirmamos que el comportamiento cambia según el estado del proyecto?
+>
+> La respuesta no es clara. Si uno está parado sobre un proyecto (tarea del
+> proyecto) se hace lo siguiente según su estado: draft: TJP solo con las
+> tareas pendientes del proyecto referencia -> Procesa -> Cambia los tiempos
+> y las asignaciones de recursos de las tareas del proyecto referencia.
+> evaluation: TJP solo con las tareas pendientes de proyecto referencia +
+> tareas pendientes en proyectos en progress -> Procesa -> Cambia los
+> tiempos y las asignaciones de recursos de las tareas del proyecto
+> referencia. progress: TJP solo con TODAS las tareas pendientes de los
+> proyectos en progress -> Procesa -> Cambia los tiempos y las asignaciones
+> de recursos de los proyectos en progress.
+>
+> Si, quiero que lo corrijas. Quiero asegurarme no arrastrar más errores de
+> esta parte del código.
+
+### Discusión de diseño
+
+Al confirmar la corrección anterior (v17.0.9.7.19, subtareas cross-proyecto)
+contra el código real de `_tj_portfolio_recordset`, surgió una segunda
+discrepancia real, distinta de la primera: el recordset combinado que
+arma el `.tjp` **no distinguía `draft` de `evaluation`** — ambos generaban
+exactamente el mismo combinado (proyecto activo + todos los "en progreso"),
+sin importar el estado propio (`action_run_schedule` lo decía
+explícitamente en un comentario: "sin importar su propio estado").
+
+Esto contradecía dos fuentes, no solo la lectura del usuario: (1) el propio
+`help` del campo `project.project.state` (`project_improve/models/
+project_project.py`): *"'Borrador': el proyecto se planifica aislado, sin
+competir por recursos con otros proyectos"*; y (2) el diseño original de
+2026-07-13 (ver memoria `project_portfolio_scheduling_states`): *"Draft: ...
+corre en un escenario aislado (solo ese proyecto) ... sirve para
+presupuestar"*. La implementación de 2026-07-14 se desvió de ambos sin que
+ningún test lo cubriera — el único test de recordset combinado
+(`test_combines_all_progress_projects_with_self`) usaba un proyecto en
+`evaluation`, nunca en `draft`. Alcanzable desde la UI: el botón
+"Replanificar" (`action_run_schedule`) solo se gatea por `is_tj_enabled`,
+no por `state`.
+
+El write-back (`_import_all_schedules`, qué proyectos persisten su
+schedule) sí distinguía bien los 3 casos y no necesitó cambios — la
+corrección es exclusivamente sobre qué tareas entran a competir por
+recursos en el `.tjp` generado.
+
+### Corregido
+
+- **`_tj_portfolio_recordset`** (`models/project_project.py`): con
+  `self.state == 'draft'` devuelve `self` solo (aislado, como documenta el
+  propio campo); con `evaluation`/`progress` sigue combinando con todos los
+  proyectos `'progress'` (comportamiento sin cambios para esos dos casos).
+- Comentario de `action_run_schedule` corregido (ya no dice "sin importar
+  su propio estado", que dejó de ser cierto).
+- Tests nuevos: `test_draft_project_is_isolated_from_progress_peers`
+  (`tests/test_portfolio_scheduling.py`, nivel recordset) y
+  `test_draft_project_generate_tjp_excludes_peer_tasks` (mismo archivo,
+  end-to-end contra el `.tjp` generado — complementa
+  `test_combined_tjp_includes_both_task_trees`).
+
 ## [17.0.9.7.19] - 2026-07-27
 
 ### Prompt

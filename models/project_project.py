@@ -125,11 +125,12 @@ class ProjectProject(models.Model):
         except (ValueError, TypeError):
             timeout = 120
 
-        # Recordset combinado: todos los proyectos 'en progreso' + self (el
-        # proyecto que dispara la corrida), sin importar su propio estado —
-        # ver _tj_portfolio_recordset. _call_tj_microservice sigue
-        # invocándose sobre `self` (no `combined`): solo postea errores al
-        # chatter del proyecto que disparó la corrida, no a todo el portfolio.
+        # Recordset combinado: depende del estado de self (draft => self
+        # solo, sin competir por recursos con nadie; evaluation/progress =>
+        # todos los 'en progreso' + self) — ver _tj_portfolio_recordset.
+        # _call_tj_microservice sigue invocándose sobre `self` (no
+        # `combined`): solo postea errores al chatter del proyecto que
+        # disparó la corrida, no a todo el portfolio.
         combined = self._tj_portfolio_recordset()
         tjp_content = combined._generate_tjp(active_project=self)
         try:
@@ -167,12 +168,26 @@ class ProjectProject(models.Model):
         }
 
     def _tj_portfolio_recordset(self):
-        """Recordset a combinar en una corrida de scheduling: todos los
-        proyectos 'en progreso' + `self` (el que dispara la corrida), sin
-        importar su propio estado — así 'en evaluación' compite por los
-        mismos recursos reales que 'en progreso' ya tiene comprometidos, y
-        'en progreso' se recalcula junto con sus pares."""
+        """Recordset a combinar en una corrida de scheduling, según el
+        `state` de `self` (el proyecto que dispara la corrida) — ver su
+        `help` en project_improve.project_project:
+
+        - 'draft': `self` solo. El proyecto se planifica aislado, para
+          presupuestar (alcance/esfuerzo/recursos necesarios) sin competir
+          por recursos reales con nadie — bug real corregido (2026-07-27):
+          antes de este fix, un proyecto en borrador igual se combinaba con
+          todos los 'en progreso', contradiciendo tanto el diseño original
+          (ver memoria project_portfolio_scheduling_states) como el propio
+          texto de ayuda del campo.
+        - 'evaluation'/'progress': todos los proyectos 'en progreso' +
+          `self` — así 'en evaluación' compite por los mismos recursos
+          reales que 'en progreso' ya tiene comprometidos (de una sola vía:
+          los 'en progreso' no se ven afectados, ver _import_all_schedules),
+          y 'en progreso' se recalcula junto con sus pares (`self` ya es uno
+          de ellos en ese caso)."""
         self.ensure_one()
+        if self.state == 'draft':
+            return self
         progress_projects = self.search([('state', '=', 'progress')])
         return progress_projects | self
 

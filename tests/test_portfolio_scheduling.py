@@ -35,6 +35,16 @@ class TestPortfolioRecordset(TransactionCase):
         self.assertIn(self.progress1, combined)
         self.assertIn(self.progress2, combined)
 
+    def test_draft_project_is_isolated_from_progress_peers(self):
+        """Bug real (2026-07-27): un proyecto 'draft' se planifica aislado,
+        para presupuestar sin competir por recursos con nadie (ver help de
+        project.project.state y el diseño original en la memoria
+        project_portfolio_scheduling_states). Antes de este fix,
+        _tj_portfolio_recordset combinaba igual con todos los 'en progreso'
+        sin importar el estado propio, contradiciendo ambos."""
+        combined = self.draft._tj_portfolio_recordset()
+        self.assertEqual(combined, self.draft)
+
 
 class TestMultiProjectGeneration(TransactionCase):
 
@@ -88,6 +98,20 @@ class TestMultiProjectGeneration(TransactionCase):
         tjp = combined._generate_tjp(active_project=self.project_a)
         self.assertIn(f'task {combined._tjp_task_id(self.task_a)}', tjp)
         self.assertIn(f'task {combined._tjp_task_id(self.task_b)}', tjp)
+
+    def test_draft_project_generate_tjp_excludes_peer_tasks(self):
+        """Complemento end-to-end de test_combined_tjp_includes_both_task_trees:
+        con project_a en 'draft' (en vez de 'evaluation'), _tj_portfolio_recordset
+        ya no debe traer a project_b (aunque esté 'en progreso') al .tjp
+        generado — bug real corregido (2026-07-27)."""
+        self.project_a.state = 'draft'
+        try:
+            combined = self.project_a._tj_portfolio_recordset()
+            tjp = combined._generate_tjp(active_project=self.project_a)
+            self.assertIn(f'task {combined._tjp_task_id(self.task_a)}', tjp)
+            self.assertNotIn(f'task {combined._tjp_task_id(self.task_b)}', tjp)
+        finally:
+            self.project_a.state = 'evaluation'
 
     def test_single_project_generation_is_unchanged(self):
         """N=1 no debe ser un caso especial: mismo resultado que antes."""
