@@ -8,6 +8,7 @@ in isolation from HTTP concerns entirely.
 import requests
 from unittest.mock import MagicMock, patch
 
+from odoo import fields
 from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase
 
@@ -82,6 +83,17 @@ class TestActionRunScheduleSuccess(TransactionCase):
         ])
         self.assertTrue(schedule, 'Schedule should have been imported from the mocked tj3 response')
 
+        # El aviso flotante (result['params']) desaparece solo — el éxito
+        # también debe quedar como nota en el chatter, igual que ya pasa con
+        # cualquier error de la corrida (ver _tj_post_error).
+        messages = self.env['mail.message'].search([
+            ('model', '=', 'project.project'), ('res_id', '=', self.project.id),
+        ])
+        self.assertTrue(
+            messages.filtered(lambda m: result['params']['message'] in (m.body or '')),
+            'El mensaje de éxito debe quedar posteado en el chatter del proyecto',
+        )
+
     def test_generated_tjp_and_url_are_passed_to_the_microservice(self):
         with patch.object(
             ProjectProject, '_call_tj_microservice',
@@ -98,6 +110,58 @@ class TestActionRunScheduleSuccess(TransactionCase):
         self.assertEqual(base_url, 'http://tj3.local')
         self.assertIn(f'project p{self.project.id}', tjp_content)
         self.assertIsInstance(timeout, int)
+
+
+class TestActionRunScheduleSuccessPortfolio(TransactionCase):
+    """Bug real (2026-07-30): en estado 'progress', una sola corrida
+    recalcula TODOS los proyectos 'en progreso' a la vez — un único
+    `.tjp` combinado, un único POST a tj3-ms (ver
+    _tj_portfolio_recordset/_generate_tjp) — pero la nota de éxito en el
+    chatter (agregada en esta misma sesión) al principio solo se posteaba
+    en `self` (el proyecto que disparó el click), dejando a los demás
+    proyectos combinados sin ningún rastro del schedule que también se
+    les acaba de aplicar. Corregido postéandola en `persisted` (mismo
+    recordset que ya se usa para el write-back de schedule_dirty/
+    last_scheduled), iterando porque message_post no acepta multi-record."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.driver = cls.env['project.project'].create({
+            'name': 'Portfolio Driver', 'is_tj_enabled': True, 'state': 'progress',
+        })
+        cls.peer = cls.env['project.project'].create({
+            'name': 'Portfolio Peer', 'is_tj_enabled': True, 'state': 'progress',
+        })
+        cls.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': cls.driver.id, 'is_baseline': True,
+        })
+        cls.env['insight.scenario'].create({
+            'name': 'Plan', 'project_id': cls.peer.id, 'is_baseline': True,
+        })
+        cls.env['ir.config_parameter'].sudo().set_param('insight_project.tj_microservice_url', 'http://tj3.local')
+
+    def test_success_note_posted_on_every_persisted_project_with_a_single_call(self):
+        with patch.object(
+            ProjectProject, '_call_tj_microservice',
+            return_value={'csv_files': {}},
+        ) as mocked_call:
+            self.driver.action_run_schedule()
+
+        self.assertEqual(
+            mocked_call.call_count, 1,
+            'Un solo _call_tj_microservice por corrida, sin importar cuántos '
+            'proyectos "en progreso" se combinen — no debe ejecutarse una '
+            'vez por proyecto.',
+        )
+        for project in (self.driver, self.peer):
+            messages = self.env['mail.message'].search([
+                ('model', '=', 'project.project'), ('res_id', '=', project.id),
+            ])
+            self.assertTrue(
+                messages.filtered(lambda m: 'Schedule actualizado' in (m.body or '')),
+                f'{project.name} debe tener la nota de éxito en su propio chatter',
+            )
 
 
 class TestCallTjMicroservice(TransactionCase):
@@ -354,3 +418,52 @@ class TestActionRunScheduleHorizonWarning(TransactionCase):
             ('res_model', '=', 'project.project'), ('res_id', '=', self.project.id),
         ])
         self.assertFalse(activities, 'No debe agendarse revisión si self.date ya cubre el horizonte derivado')
+
+
+class TestSuggestHorizonNeverShrinks(TransactionCase):
+    """Bug real (2026-07-29, datos de producción): _tjp_suggest_horizon
+    sumaba la duración estimada siempre desde `date_start` solo, sin pisar
+    contra el horizonte YA configurado (`self.date`). Con un proyecto viejo
+    (`date_start` lejano) y `self.date` ya extendido varias veces a mano, la
+    cuenta a secas podía dar una fecha MENOR a la ya puesta — el botón
+    "Extender horizonte de planificación" del wizard terminaba ENCOGIENDO
+    el horizonte en vez de ampliarlo, y volver a programar fallaba de nuevo
+    con el mismo "N tareas no entran" (confirmado contra el historial real
+    de tracking de un proyecto de producción: `date` pasó de 2029-08-31 a
+    2029-08-16 al apretar "Extender")."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Suggest Horizon Project',
+            'is_tj_enabled': True,
+            'date_start': '2020-01-01',
+        })
+        Task = cls.env['project.task'].with_context(default_project_id=cls.project.id)
+        Task.create({
+            'name': 'Tarea con esfuerzo',
+            'project_id': cls.project.id,
+            'allocated_hours': 40.0,
+            'user_ids': [(6, 0, [cls.env.user.id])],
+        })
+
+    def test_never_suggests_earlier_than_the_already_configured_date(self):
+        far_future = fields.Date.from_string('2035-01-01')
+        self.project.date = far_future
+
+        suggested = self.project._tjp_suggest_horizon(self.project.date_start)
+
+        self.assertGreater(
+            suggested, far_future,
+            '"Extender" nunca debe sugerir (ni aplicar) una fecha anterior '
+            'o igual a la ya configurada.',
+        )
+
+    def test_falls_back_to_start_when_no_date_is_configured(self):
+        self.project.date = False
+        start = fields.Date.from_string('2020-01-01')
+
+        suggested = self.project._tjp_suggest_horizon(start)
+
+        self.assertGreater(suggested, start)

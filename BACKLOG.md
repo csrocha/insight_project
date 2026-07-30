@@ -218,3 +218,16 @@ ninguna conversación previa, quedan acá para discutir si valen la pena:
   % de avance que calcula TJ3 — el único mecanismo de "task vencida"
   hoy es el heurístico de `_cron_flag_changes_requested`
   (fecha vencida u horas agotadas en camino crítico).
+
+---
+
+## De la conversación de hoy (2026-07-28)
+
+### 9. Tareas coordinadas para la fecha de hoy deben quedar asignadas a hoy
+
+Pedido del usuario: las tareas que el scheduling (TJ3) coordina/agenda
+para la fecha de hoy tienen que quedar asignadas para hoy (no para otra
+fecha). Anotado tal cual lo pidió el usuario — falta precisar contra el
+código actual (`insight.task.schedule`, `_tjp_reports`/import de vuelta)
+si esto ya pasa y hay un caso puntual que falla, o si falta implementarlo
+en general.

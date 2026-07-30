@@ -231,9 +231,18 @@ class TestArchivedAncestorPreflight(TransactionCase):
     """Bug real (2026-07-28, ver memoria
     project_insight_project_tjp_cross_project_depends_bug): Odoo permite
     archivar una tarea sin archivar sus subtareas, dejando una rama activa
-    invisible para el schedule TJ3 sin ningún aviso. Decisión del usuario:
-    bloquear la corrida completa (no enmascararlo en el exportador) y dejar
-    una actividad por grupo con el subárbol activo completo involucrado."""
+    invisible para el schedule TJ3 sin ningún aviso. Decisión del usuario
+    (confirmada 2026-07-29, tras una corrección de rumbo intermedia que
+    intentó angostar el guard a solo-si-hay-una-dependencia-real y resultó
+    equivocada): bloquear la corrida completa ante CUALQUIER tarea archivada
+    con descendencia activa, sin importar si algo depende de esa rama o no
+    — dejar una actividad por grupo con el subárbol activo completo
+    involucrado. Los tests con una arista `depends`/milestone real cruzando
+    el archivado (test_dependency_edge_.../test_milestone_edge_...) no son
+    un caso aparte con lógica propia — son el mismo chequeo amplio
+    (`_tj_archived_ancestor_groups`, que no le presta atención a si algo
+    depende de la rama activa o no), documentados por separado porque así
+    es como el bug real llegó a producción."""
 
     def _project_with_scenario(self, name):
         project = self.env['project.project'].create({
@@ -272,6 +281,57 @@ class TestArchivedAncestorPreflight(TransactionCase):
         self.assertIn('archivada', str(cm.exception))
         self.assertNotIn('microservicio', str(cm.exception))
 
+    def test_dependency_edge_into_archived_ancestor_is_also_blocked(self):
+        """Caso puntual (2026-07-28, real de producción): A (activa) depende
+        de B (activa), B es subtarea de C (archivada). No requiere lógica
+        propia — es una instancia más de "archivada con descendencia
+        activa" (mismo `test_archived_ancestor_with_active_descendants_
+        blocks_schedule` de arriba), documentado aparte porque así llegó el
+        bug real: vía un `depends` que revienta en TJ3 con "has unknown
+        depends", no vía una tarea huérfana sin referencias."""
+        project = self._project_with_scenario('Preflight Blocked Dependency Edge')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        archived_ancestor = Task.create({
+            'name': 'Eje archivado', 'project_id': project.id, 'active': False,
+        })
+        blocker = Task.create({
+            'name': 'Bloqueante activa', 'project_id': project.id,
+            'parent_id': archived_ancestor.id,
+        })
+        Task.create({
+            'name': 'Dependiente', 'project_id': project.id,
+            'depend_on_ids': [(6, 0, [blocker.id])],
+        })
+
+        with self.assertRaises(UserError) as cm:
+            project.action_run_schedule(interactive=False)
+        self.assertIn('archivada', str(cm.exception))
+        self.assertNotIn('microservicio', str(cm.exception))
+
+    def test_milestone_edge_into_archived_ancestor_is_also_blocked(self):
+        """Mismo caso que el anterior, pero la arista es un
+        project.milestone.task_ids en vez de depend_on_ids — tampoco
+        necesita lógica propia, ya lo cubre el chequeo amplio de descendencia
+        activa bajo un ancestro archivado."""
+        project = self._project_with_scenario('Preflight Blocked Milestone Edge')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        archived_ancestor = Task.create({
+            'name': 'Eje archivado', 'project_id': project.id, 'active': False,
+        })
+        linked_task = Task.create({
+            'name': 'Vinculada a milestone', 'project_id': project.id,
+            'parent_id': archived_ancestor.id,
+        })
+        milestone = self.env['project.milestone'].create({
+            'name': 'Hito', 'project_id': project.id,
+        })
+        linked_task.milestone_id = milestone.id
+
+        with self.assertRaises(UserError) as cm:
+            project.action_run_schedule(interactive=False)
+        self.assertIn('archivada', str(cm.exception))
+        self.assertNotIn('microservicio', str(cm.exception))
+
     def test_flag_helper_creates_activity_with_full_active_subtree(self):
         """El helper en sí (llamado directo, sin pasar por ningún raise) sí
         deja probar la persistencia real de la actividad/mensaje."""
@@ -302,6 +362,83 @@ class TestArchivedAncestorPreflight(TransactionCase):
         self.assertTrue(activity, 'Debe crear una actividad en la tarea archivada')
         self.assertIn(child.name, activity.note or '')
         self.assertIn(grandchild.name, activity.note or '')
+
+    def test_closed_state_root_with_active_descendants_blocks_schedule(self):
+        """Bug real (2026-07-29, datos de producción): una tarea RAÍZ
+        marcada "Hecha" (`state='1_done'`) sin archivar (`active=True`)
+        esconde su rama del recorrido de raíces de _generate_tjp igual que
+        una archivada — project.task_ids trae un dominio nativo
+        `[('state','in',OPEN_STATES)]` ajeno a `active`. El guard viejo
+        (`not t.active`) no lo detectaba porque la raíz seguía activa."""
+        project = self._project_with_scenario('Preflight Blocked Closed Root')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        closed_root = Task.create({
+            'name': 'Eje cerrado', 'project_id': project.id, 'state': '1_done',
+        })
+        Task.create({
+            'name': 'Nieta activa colgando', 'project_id': project.id,
+            'parent_id': closed_root.id,
+        })
+
+        with self.assertRaises(UserError) as cm:
+            project.action_run_schedule(interactive=False)
+        self.assertIn('cerrada', str(cm.exception))
+        self.assertNotIn('microservicio', str(cm.exception))
+
+    def test_flag_helper_uses_reopen_wording_for_closed_state_root(self):
+        """El mensaje/actividad debe distinguir el caso: una raíz cerrada
+        pero activa dice "marcada como terminada/cancelada" y "Reabrí" —
+        no "archivada"/"Desarchivá", que sería engañoso (`active` sigue en
+        `True`, no hay nada que desarchivar)."""
+        project = self._project_with_scenario('Flag Helper Closed Root Project')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        closed_root = Task.create({
+            'name': 'Eje cerrado', 'project_id': project.id, 'state': '1_done',
+        })
+        child = Task.create({
+            'name': 'Hija activa', 'project_id': project.id, 'parent_id': closed_root.id,
+        })
+
+        combined = project._tj_portfolio_recordset()
+        groups = combined._tj_archived_ancestor_groups()
+        self.assertEqual(len(groups), 1)
+        root, active_descendants = groups[0]
+        self.assertEqual(root, closed_root)
+        self.assertEqual(active_descendants, child)
+
+        root._tj_flag_archived_ancestor_inconsistency(active_descendants)
+
+        activity = self.env['mail.activity'].search([
+            ('res_model', '=', 'project.task'), ('res_id', '=', closed_root.id),
+        ])
+        self.assertTrue(activity, 'Debe crear una actividad en la tarea cerrada')
+        self.assertIn('Reabrí', activity.note or '')
+        self.assertNotIn('Desarchivá', activity.note or '')
+
+    def test_dependency_edge_into_closed_state_root_is_also_blocked(self):
+        """Forma exacta del bug real de producción: una tarea de OTRO eje
+        del mismo proyecto depende de una sub-tarea activa colgando de una
+        raíz cerrada — mismo guard amplio, sin lógica propia (ver
+        test_dependency_edge_into_archived_ancestor_is_also_blocked, su
+        análogo para el caso archivado)."""
+        project = self._project_with_scenario('Preflight Blocked Closed Root Edge')
+        Task = self.env['project.task'].with_context(default_project_id=project.id)
+        closed_root = Task.create({
+            'name': 'Eje cerrado', 'project_id': project.id, 'state': '1_done',
+        })
+        blocker = Task.create({
+            'name': 'Bloqueante activa', 'project_id': project.id,
+            'parent_id': closed_root.id,
+        })
+        Task.create({
+            'name': 'Dependiente de otro eje', 'project_id': project.id,
+            'depend_on_ids': [(6, 0, [blocker.id])],
+        })
+
+        with self.assertRaises(UserError) as cm:
+            project.action_run_schedule(interactive=False)
+        self.assertIn('cerrada', str(cm.exception))
+        self.assertNotIn('microservicio', str(cm.exception))
 
     def test_no_archived_inconsistency_does_not_block_on_preflight(self):
         """Sin ninguna tarea archivada con descendencia activa, el pre-flight

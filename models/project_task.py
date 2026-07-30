@@ -106,28 +106,42 @@ class ProjectTask(models.Model):
         (overdue | over_budget).write({'state': '02_changes_requested'})
 
     def _tj_flag_archived_ancestor_inconsistency(self, active_descendants):
-        """Posteo + actividad que fuerza a resolver a mano una tarea
-        archivada con descendencia activa (ver
+        """Posteo + actividad que fuerza a resolver a mano una raíz oculta
+        con descendencia activa (ver
         project.project._tj_archived_ancestor_groups) antes de poder
-        programar el portfolio — desarchivarla o reasignar esa descendencia
-        a un padre activo. Un `mail.activity` por grupo (no uno agregado por
-        proyecto), anclado en la tarea archivada misma, con el link a cada
-        descendiente activo involucrado."""
+        programar el portfolio. `self` llega acá por una de dos causas
+        (ver _tjp_dep_ancestors_active para el detalle completo): archivada
+        (`active=False`) o con `state` cerrado (Hecho/Cancelado) pero
+        todavía activa — el texto y la acción sugerida difieren según cuál
+        sea, así que se distingue por `self.active` en vez de un mensaje
+        genérico. Un `mail.activity` por grupo (no uno agregado por
+        proyecto), anclado en la raíz misma, con el link a cada descendiente
+        activo involucrado."""
         self.ensure_one()
-        lines = [_(
-            'Esta tarea está archivada pero tiene %(n)d subtarea(s) activa(s) '
-            'colgando debajo (a cualquier profundidad). Mientras no se '
-            'resuelva, esa descendencia queda invisible para el schedule TJ3 '
-            'y el portfolio no se puede programar. Desarchivá esta tarea o '
-            'reasigná esas subtareas a un padre activo:'
-        ) % {'n': len(active_descendants)}]
-        lines += [t._get_html_link() for t in active_descendants]
+        if self.active:
+            lead = _(
+                'Esta tarea está marcada como terminada/cancelada, pero tiene '
+                '%(n)d subtarea(s) activa(s) colgando debajo (a cualquier '
+                'profundidad). Mientras no se resuelva, esa descendencia queda '
+                'invisible para el schedule TJ3 y el portfolio no se puede '
+                'programar. Reabrí esta tarea o reasigná esas subtareas a un '
+                'padre activo:'
+            ) % {'n': len(active_descendants)}
+        else:
+            lead = _(
+                'Esta tarea está archivada pero tiene %(n)d subtarea(s) activa(s) '
+                'colgando debajo (a cualquier profundidad). Mientras no se '
+                'resuelva, esa descendencia queda invisible para el schedule TJ3 '
+                'y el portfolio no se puede programar. Desarchivá esta tarea o '
+                'reasigná esas subtareas a un padre activo:'
+            ) % {'n': len(active_descendants)}
+        lines = [lead] + [t._get_html_link() for t in active_descendants]
         msg = Markup('<br/>').join(lines)
         self.message_post(body=msg)
         self.activity_schedule(
             'mail.mail_activity_data_todo',
             date_deadline=fields.Date.today(),
-            summary=_('Resolver tarea archivada con subtareas activas'),
+            summary=_('Resolver tarea archivada/cerrada con subtareas activas'),
             note=msg,
             user_id=self.project_id.user_id.id or self.env.user.id,
         )

@@ -9,6 +9,148 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.22] - 2026-07-29
+
+### Prompt
+
+> El error: Error del microservicio TJ3: 422 Client Error [...] Task
+> t1979.t1980 has unknown depends t1953.t1966 [...] Pude reproducirlo. El
+> tema es el siguiente: Las task t1979.t1980 depende de t1953.t1966; pero
+> si t1953.t1966 está activada (Open task) no aparece ningún error, pero si
+> se desactiva sí aparece el error! Supongo que estamos hablando del campo
+> "active" de Odoo.
+>
+> [...] A ver, ese caso es normativo. Ambas tareas estan terminadas, no
+> deben agregarse a la lista de las dependencias. [...]
+>
+> [...] Test 1) Caso tarea archivada + subtareas activas colgando: Tiene
+> que avisar y no correr el scheduler. Test 2) [...] Pero si es el mismo
+> caso de Caso 1. O me equivoco. [...] Test 5) Toda tarea archivada no
+> puede aparecer en TPJ. Ni como tarea ni como dependencia. Test 6) Toda
+> tarea de una tarea padre archivada no puede aparecer en el TPJ.
+>
+> [...] No se resolvió nada: [mismo 422, "has unknown depends"] Porque
+> insiste? El test 5 se pasó bien? Tenemos un escenario donde t1979.t1980
+> dependen de tareas desactivadas (t1953.t1966)?
+>
+> Excelente, ahora funciona. Pero tengo otro problema: [...] 8 tarea(s) no
+> entran en el horizonte de planificación actual [...] Pero cuando pido
+> extender, no extiende. Queda con la fecha definida.
+>
+> El mensaje debería decir: Schedule completado / Schedule actualizado
+> para 3 escenario(s). No como aviso, sino como nota en el chatter del
+> proyecto. [...] Cuando se ejecuta el reschedule solo hay que dejar la
+> nota de actualizado a todos los proyectos actualizados [...] no debería
+> ejecutarse N veces una por proyecto, con ejecutarse una vez es
+> suficiente. No sé cómo se está manejando eso.
+
+### Discusión de diseño
+
+Reproducido en vivo contra la DB real (`odoo shell` + POST directo a
+tj3-ms, sin pasar por `action_run_schedule` para no arriesgar un commit
+real durante el diagnóstico — ver más abajo el incidente donde sí pasó).
+El diagnóstico inicial (task 1966 archivada, `active=False`) resultó
+incompleto: con los datos reales, **todas** las tareas de la cadena
+(1953/1966/1967-1969/1979/1980) tenían `active=True`. La causa real: la
+tarea raíz 1953 ("Eje 0") tenía `state='1_done'` (marcada Hecha) sin estar
+archivada. `project.project.task_ids` (el campo nativo que
+`_generate_tjp` usa para encontrar las raíces) trae un dominio de Odoo
+`[('state', 'in', OPEN_STATES)]` que excluye cualquier tarea Hecha/
+Cancelada del recorrido — **sin que `active` tenga nada que ver**. Ninguno
+de los chequeos existentes (`_tjp_dep_ancestors_active`,
+`_tj_archived_ancestor_groups`) miraba `state`, solo `active`, así que este
+caso pasaba desapercibido: 1953 (y sus 25 descendientes activos, incluida
+1966) quedaban invisibles para el `.tjp` sin ningún aviso.
+
+Falso comienzo durante la sesión: se angostó primero el guard de
+`action_run_schedule` para que solo bloqueara ante una arista `depends`
+real cruzando la raíz oculta (no ante cualquier raíz oculta con
+descendencia activa huérfana) — interpretando mal una aclaración del
+usuario sobre un caso "normativo" (tarea + subtareas dadas por terminadas
+juntas). El usuario corrigió: el guard amplio (2026-07-28) era el
+correcto — cualquier raíz oculta con descendencia activa debe avisar y
+bloquear, sin importar si algo depende de ella o no; los casos con una
+arista `depends`/milestone real cruzándola no son un caso aparte, son la
+misma condición. Se revirtió (`git checkout --`) y se extendió el guard
+amplio para cubrir también la causa de `state` cerrado, en vez de
+reemplazarlo.
+
+Incidente real durante el primer diagnóstico: un script de repro llamó a
+`action_run_schedule` fuera del test runner — ese método hace
+`self.env.cr.commit()` real antes de lanzar el `UserError` del guard (para
+que el aviso sobreviva al rollback normal de un error), así que el
+`active=False` de la prueba quedó escrito de verdad en la DB junto con una
+actividad real. Detectado cruzando `mail.tracking.value`/`mail.activity`
+reales, revertido a mano (tarea reactivada, actividad y mensajes de
+prueba borrados, dejando intacto el historial real del usuario). Lección:
+para probar cualquier método que pueda tener un `commit()` interno contra
+datos reales, usar siempre lectura pura (`_generate_tjp` + POST directo a
+tj3-ms) en vez de `action_run_schedule`.
+
+Segundo bug encontrado en la misma sesión, ya con el primero resuelto: el
+botón "Extender horizonte de planificación" (wizard
+`insight.unscheduled.tasks.wizard`) no avanzaba nada. Confirmado contra el
+historial real de `mail.tracking.value` del proyecto: `date` pasó de
+`2029-08-31` a `2029-08-16` al apretar "Extender" — **una fecha menor**.
+`_tjp_suggest_horizon` calculaba la duración estimada siempre desde
+`date_start`, sin pisar contra el horizonte ya configurado (`self.date`);
+en un proyecto viejo con `date` ya extendido varias veces a mano, la
+cuenta a secas podía dar un valor menor al ya puesto, encogiendo el
+horizonte en vez de ampliarlo. De paso se corrigió el texto del aviso, que
+seguía mencionando el campo `tj_end_date` ("Horizonte de planificación"),
+eliminado hace tiempo y consolidado en `date` ("Fecha de vencimiento").
+
+Por pedido del usuario, el aviso de éxito ("Schedule completado") ahora
+también queda como nota en el chatter (antes solo existía como
+notificación flotante, sin ningún rastro consultable después — a
+diferencia de cualquier error de la corrida, que sí se posteaba). Aclaración
+del usuario: en estado `progress`, una sola corrida recalcula TODOS los
+proyectos "en progreso" a la vez (un único `.tjp` combinado, un único POST
+a tj3-ms — eso ya funcionaba bien) — la nota debía postearse en todos los
+proyectos persistidos (`persisted`, el mismo recordset que ya recibe el
+write-back de `schedule_dirty`/`last_scheduled`), no solo en el proyecto
+que disparó el click.
+
+### Corregido
+
+- **`_tjp_dep_ancestors_active`** (`models/project_project.py`): además de
+  la cadena de ancestros activa, ahora también exige que la raíz de esa
+  cadena tenga `state` en `OPEN_STATES` — una raíz "Hecha"/"Cancelada" sin
+  archivar también corta la recursión de `_generate_tjp` (vía el dominio
+  nativo de `project.task_ids`), no solo una raíz archivada.
+- **`_tj_archived_ancestor_groups`**: detecta también tareas raíz con
+  `state` cerrado (`active=True`) con descendencia activa, no solo
+  archivadas — mismo síntoma ("has unknown depends"/trabajo invisible),
+  causa distinta.
+- **`_tj_flag_archived_ancestor_inconsistency`** (`models/project_task.py`):
+  distingue el mensaje/actividad según `self.active` — "Reabrí"/"marcada
+  como terminada" para el caso de `state` cerrado, "Desarchivá" para el
+  caso archivado (evita instruir "desarchivar" una tarea que sigue
+  activa).
+- **`_tjp_suggest_horizon`**: piso en `max(start, self.date)` antes de
+  sumar la duración estimada — "Extender" ya nunca sugiere ni aplica una
+  fecha anterior o igual a la ya configurada.
+- **`_tj_unscheduled_message`**: el texto ya no menciona el campo
+  eliminado `tj_end_date` ("Horizonte de planificación"), sino el actual
+  `date` ("Fecha de vencimiento").
+
+### Agregado
+
+- **`action_run_schedule`**: la nota de éxito en el chatter
+  ("Schedule actualizado para N escenario(s)") se postea en `persisted`
+  (todos los proyectos combinados que efectivamente se actualizaron en
+  estado `progress`), no solo en `self`.
+- Tests nuevos: `test_closed_state_root_blocker_not_emitted_as_dependency`
+  / `test_closed_state_root_itself_not_emitted_as_dependency`
+  (`tests/test_tjp_export.py`); `test_closed_state_root_with_active_
+  descendants_blocks_schedule` / `test_flag_helper_uses_reopen_wording_
+  for_closed_state_root` / `test_dependency_edge_into_closed_state_root_
+  is_also_blocked` (`tests/test_portfolio_scheduling.py`);
+  `TestSuggestHorizonNeverShrinks` / `TestActionRunScheduleSuccessPortfolio`
+  (`tests/test_scheduler.py`, esta última confirma explícitamente un solo
+  `_call_tj_microservice` con la nota posteada en todos los proyectos
+  combinados).
+
 ## [17.0.9.7.21] - 2026-07-28
 
 ### Prompt

@@ -19,6 +19,21 @@ from odoo.tests.common import TransactionCase
 from ..models.project_project import ProjectProject
 
 
+def _declared_and_referenced_ids(tjp_text):
+    """Todo id que aparece del lado derecho de un `task <id> "..." {` está
+    declarado; todo id (sin bangs) al final de un `depends`/`precedes` está
+    referenciado. TJ3 rechaza el archivo si algún referenciado no está
+    declarado ("has unknown depends")."""
+    declared = set(re.findall(r'^\s*task (\S+) "', tjp_text, re.MULTILINE))
+    referenced = set()
+    for line in tjp_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('depends ') or stripped.startswith('precedes '):
+            path = stripped.split()[1].lstrip('!')
+            referenced.add(path)
+    return declared, referenced
+
+
 class TestTjpProjectHeader(TransactionCase):
 
     @classmethod
@@ -660,6 +675,81 @@ class TestTjpTaskBlock(TransactionCase):
         lines = self.project._tjp_task_block(dependent)
         text = '\n'.join(lines)
         self.assertNotIn('depends', text)
+
+    def test_closed_state_root_blocker_not_emitted_as_dependency(self):
+        """Bug real (2026-07-29, datos de producción): a diferencia del caso
+        de arriba, acá el ancestro NO está archivado (`active=True`) — está
+        marcado "Hecho" (`state='1_done'`). `project.project.task_ids` (el
+        campo que usa `_generate_tjp` para encontrar las raíces) trae un
+        dominio nativo `[('state', 'in', OPEN_STATES)]` que excluye
+        cualquier tarea Hecha/Cancelada de ese recorrido — sin que `active`
+        tenga nada que ver. El chequeo de archivado (`.filtered('active')` +
+        el walk de ancestros activos) no detectaba este caso porque la raíz
+        en sí seguía activa; reproducido con IDs reales de producción donde
+        `t1953` (raíz, `active=True`, `state='1_done'`) escondía 3 subtareas
+        activas, rompiendo el `depends` de una tarea de otro eje del mismo
+        proyecto con "has unknown depends" en TJ3."""
+        closed_root = self._task(name='Eje cerrado', state='1_done')
+        blocker = self._task(name='Bloqueante', parent_id=closed_root.id)
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [blocker.id])])
+        lines = self.project._tjp_task_block(dependent)
+        text = '\n'.join(lines)
+        self.assertNotIn('depends', text)
+
+    def test_closed_state_root_itself_not_emitted_as_dependency(self):
+        """Variante de la anterior: el propio destino del `depends` es la
+        raíz cerrada (no una sub-tarea suya). `dep.active` sigue siendo
+        `True` (`state` cerrado no implica archivar), así que
+        `.filtered('active')` no lo excluye — hace falta el chequeo de
+        `state` sobre la raíz en sí, no solo sobre sus ancestros."""
+        closed_root = self._task(name='Eje cerrado', state='1_done')
+        dependent = self._task(name='Dependiente', depend_on_ids=[(6, 0, [closed_root.id])])
+        lines = self.project._tjp_task_block(dependent)
+        text = '\n'.join(lines)
+        self.assertNotIn('depends', text)
+
+    def test_archived_task_never_appears_in_full_tjp_as_task_or_dependency(self):
+        """Regla explícita del usuario (2026-07-29): ninguna tarea archivada
+        puede aparecer en el .tjp completo, ni declarada como `task {}` ni
+        como destino de un `depends`/`precedes`. Chequeo contra el .tjp
+        entero (_generate_tjp), no solo contra el bloque de `dependent` como
+        en test_archived_blocker_is_not_emitted_as_dependency — acá importa
+        también que `blocker` en sí nunca aparezca del lado izquierdo de un
+        `task ... {`."""
+        # default_project_id en el contexto (no solo project_id en vals):
+        # sin él, project.task.default_get trata la tarea como "sin
+        # proyecto" para el default de user_ids y se auto-asigna el usuario
+        # actual (OdooBot bajo el test runner) — ruido ajeno a este test que
+        # además rompe _generate_tjp completo (_tjp_resource_block no
+        # resuelve un usuario para ese contacto). Ver
+        # TestTjpSelfContainment, que ya documentaba este gotcha.
+        Task = self.env['project.task'].with_context(default_project_id=self.project.id)
+        blocker = Task.create({'name': 'Bloqueante Archivado', 'active': False})
+        Task.create({'name': 'Dependiente', 'depend_on_ids': [(6, 0, [blocker.id])]})
+        tjp = self.project._generate_tjp()
+        declared, referenced = _declared_and_referenced_ids(tjp)
+        blocker_id = f't{blocker.id}'
+        self.assertNotIn(blocker_id, declared)
+        self.assertNotIn(blocker_id, referenced)
+
+    def test_active_child_of_archived_parent_never_appears_in_full_tjp_as_task_or_dependency(self):
+        """Regla explícita del usuario (2026-07-29): una tarea ACTIVA cuyo
+        padre está archivado tampoco puede aparecer en el .tjp — ni
+        declarada (la recursión de _generate_tjp solo baja desde raíces
+        activas, así que nunca llega a bajar a esta rama) ni como destino
+        de un `depends` (_tjp_dep_ancestors_active ya lo filtra). Chequeo
+        contra el .tjp entero, con IDs concretos en vez de solo
+        `assertNotIn('depends', ...)` como en
+        test_archived_ancestor_blocker_not_emitted_as_dependency."""
+        Task = self.env['project.task'].with_context(default_project_id=self.project.id)
+        archived_parent = Task.create({'name': 'Eje archivado', 'active': False})
+        blocker = Task.create({'name': 'Bloqueante Activa', 'parent_id': archived_parent.id})
+        Task.create({'name': 'Dependiente', 'depend_on_ids': [(6, 0, [blocker.id])]})
+        tjp = self.project._generate_tjp()
+        declared, referenced = _declared_and_referenced_ids(tjp)
+        blocker_id = f't{blocker.id}'
+        self.assertNotIn(blocker_id, declared)
+        self.assertNotIn(blocker_id, referenced)
 
     def test_cross_project_ancestor_outside_scope_not_emitted_as_dependency(self):
         """Bug real (2026-07-27): project.task.parent_id no exige el mismo
@@ -1326,18 +1416,7 @@ class TestTjpSelfContainment(TransactionCase):
 
     @staticmethod
     def _declared_and_referenced_ids(tjp_text):
-        """Todo id que aparece del lado derecho de un `task <id> "..." {`
-        está declarado; todo id (sin bangs) al final de un `depends`/
-        `precedes` está referenciado. TJ3 rechaza el archivo si algún
-        referenciado no está declarado ("has unknown depends")."""
-        declared = set(re.findall(r'^\s*task (\S+) "', tjp_text, re.MULTILINE))
-        referenced = set()
-        for line in tjp_text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith('depends ') or stripped.startswith('precedes '):
-                path = stripped.split()[1].lstrip('!')
-                referenced.add(path)
-        return declared, referenced
+        return _declared_and_referenced_ids(tjp_text)
 
     def test_archived_axis_with_live_branch_and_dead_sibling_dependency(self):
         project = self.env['project.project'].create({

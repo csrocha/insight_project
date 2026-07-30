@@ -10,6 +10,7 @@ import pytz
 from markupsafe import Markup
 
 from odoo import _, fields, models
+from odoo.addons.project.models.project_task import CLOSED_STATES
 from odoo.exceptions import UserError
 from odoo.tools import config as odoo_config
 
@@ -121,19 +122,18 @@ class ProjectProject(models.Model):
         # solo, sin competir por recursos con nadie; evaluation/progress =>
         # todos los 'en progreso' + self) — ver _tj_portfolio_recordset.
         combined = self._tj_portfolio_recordset()
-        # Pre-flight bloqueante, antes de exigir config del microservicio
-        # (2026-07-28, ver memoria
-        # project_insight_project_tjp_cross_project_depends_bug): Odoo
-        # permite archivar una tarea sin tocar sus subtareas — ni hay
-        # constraint que lo impida — así que un ancestro archivado con
-        # descendencia activa deja esa rama sin declarar en el .tjp
-        # (_generate_tjp solo desciende desde raíces activas) y cualquier
-        # depends/milestone que la referencie revienta con "has unknown
-        # depends" en TJ3. Es una inconsistencia de datos, no algo que el
-        # exportador deba enmascarar caminando "transparente" por el
-        # archivado: se resuelve a mano (desarchivar o reasignar), así que
-        # se bloquea la corrida completa y se deja una actividad por grupo
-        # con la lista de tareas activas involucradas.
+        # Pre-flight bloqueante, antes de exigir config del microservicio.
+        # Dos causas independientes dejan una raíz sin declarar en el .tjp
+        # con descendencia activa colgando debajo (ver
+        # _tj_archived_ancestor_groups/_tjp_dep_ancestors_active para el
+        # detalle completo de ambas — 2026-07-28 la de archivado,
+        # 2026-07-29 la de `state` cerrado sin archivar, encontrada con
+        # datos reales de producción): ninguna es un caso que el exportador
+        # deba resolver caminando "transparente" por la raíz oculta — se
+        # resuelve a mano (desarchivar/reabrir, o reasignar la
+        # descendencia), así que se bloquea la corrida completa y se deja
+        # una actividad por grupo con la lista de tareas activas
+        # involucradas.
         archived_groups = combined._tj_archived_ancestor_groups()
         if archived_groups:
             for root, active_descendants in archived_groups:
@@ -150,10 +150,11 @@ class ProjectProject(models.Model):
             if not bool(odoo_config['test_enable']):
                 self.env.cr.commit()
             raise UserError(_(
-                'Hay %(n)d tarea(s) archivada(s) con subtareas activas colgando '
-                'debajo — quedan invisibles para el schedule TJ3. Se creó una '
-                'actividad en cada una con el detalle; resolvé desarchivando la '
-                'tarea o reasignando esas subtareas a un padre activo antes de '
+                'Hay %(n)d tarea(s) archivada(s) o cerrada(s) (Hecha/Cancelada) '
+                'con subtareas activas colgando debajo — quedan invisibles para '
+                'el schedule TJ3. Se creó una actividad en cada una con el '
+                'detalle; resolvé desarchivando/reabriendo la tarea o '
+                'reasignando esas subtareas a un padre activo antes de '
                 'programar.'
             ) % {'n': len(archived_groups)})
 
@@ -193,12 +194,27 @@ class ProjectProject(models.Model):
             'last_scheduled': fields.Datetime.now(),
         })
         self._check_horizon_overrun()
+        success_message = _('Schedule actualizado para %d escenario(s).') % imported
+        # Nota en el chatter además del aviso flotante (que desaparece solo):
+        # sin esto, un schedule exitoso no dejaba ningún rastro consultable
+        # después, a diferencia de cualquier error de la corrida (que sí se
+        # postea, ver _tj_post_error/_call_tj_microservice). En `persisted`
+        # (no en `self` solo) — mismo criterio que el write-back de arriba:
+        # en 'progress' una sola corrida recalcula TODOS los proyectos en
+        # progreso a la vez (un único _call_tj_microservice, un único .tjp
+        # combinado, ver _generate_tjp/_tj_portfolio_recordset), así que
+        # todos deben quedar con el aviso, no solo el que disparó el click.
+        # `message_post` no acepta un recordset multi-registro (a
+        # diferencia de `write`), así que hace falta iterar — mismo patrón
+        # que ya usa _cron_run_portfolio_schedule más abajo.
+        for project in persisted:
+            project.message_post(body=success_message)
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
                 'title': _('Schedule completado'),
-                'message': _('Schedule actualizado para %d escenario(s).') % imported,
+                'message': success_message,
                 'type': 'success',
                 'sticky': False,
             },
@@ -229,28 +245,43 @@ class ProjectProject(models.Model):
         return progress_projects | self
 
     def _tj_archived_ancestor_groups(self):
-        """Grupos `(tarea_archivada_raíz, descendientes_activos)` dentro del
-        alcance de `self` (recordset combinado, ver _tj_portfolio_recordset).
-        Odoo permite archivar una tarea sin archivar (ni bloquear) sus
-        subtareas — ni siquiera hay un `_sql_constraints` en project.task
-        que lo impida — así que un ancestro archivado con descendencia
-        activa deja esa rama sin ningún `task {}` declarado en el .tjp (la
-        recorrida de _generate_tjp solo baja desde raíces activas): es una
-        inconsistencia de datos, no un caso que el exportador deba resolver
-        caminando "transparente" por el archivado.
+        """Grupos `(raíz_oculta, descendientes_activos)` dentro del alcance
+        de `self` (recordset combinado, ver _tj_portfolio_recordset). Dos
+        causas independientes dejan una raíz sin ningún `task {}` declarado
+        en el .tjp (la recorrida de _generate_tjp solo baja desde raíces
+        renderizables — ver _tjp_dep_ancestors_active para el detalle
+        completo de ambas), con la misma consecuencia si le queda
+        descendencia activa colgando debajo: es una inconsistencia de
+        datos, no un caso que el exportador deba resolver caminando
+        "transparente" por la raíz oculta.
+
+        1) Archivada (`active=False`): Odoo permite archivar una tarea sin
+           archivar sus subtareas — ni siquiera hay un `_sql_constraints`
+           en project.task que lo impida.
+        2) `state` cerrado (Hecho/Cancelado) pero `active=True` (bug real
+           2026-07-29, datos de producción): `project.project.task_ids`
+           trae un dominio nativo `[('state', 'in', OPEN_STATES)]` que
+           oculta la tarea del recorrido de raíces sin que `active` tenga
+           nada que ver. Solo aplica a raíces (`not parent_id`): `child_ids`
+           no filtra por `state`, así que una NO-raíz cerrada en el medio
+           del árbol no corta nada.
 
         `descendientes_activos` es el subárbol activo COMPLETO (cualquier
-        profundidad), vía `child_of`. Se reporta solo el límite superior de
-        cada tramo archivado contiguo (se salta un archivado cuyo padre
-        también esté archivado) para no duplicar el mismo subárbol en cada
-        nivel."""
+        profundidad), vía `child_of`. De la causa (1) se reporta solo el
+        límite superior de cada tramo archivado contiguo (se salta un
+        archivado cuyo padre también esté archivado) para no duplicar el
+        mismo subárbol en cada nivel; la causa (2) ya es siempre una raíz
+        real, no hay tramos que recorrer."""
         Task = self.env['project.task'].with_context(active_test=False)
         all_tasks = Task.search([('project_id', 'in', self.ids)])
         archived_roots = all_tasks.filtered(
             lambda t: not t.active and (not t.parent_id or t.parent_id.active)
         )
+        closed_state_roots = all_tasks.filtered(
+            lambda t: t.active and not t.parent_id and t.state in CLOSED_STATES
+        )
         groups = []
-        for root in archived_roots:
+        for root in archived_roots | closed_state_roots:
             descendants = Task.search([('id', 'child_of', root.id)]) - root
             active_descendants = descendants.filtered('active')
             if active_descendants:
@@ -392,19 +423,33 @@ class ProjectProject(models.Model):
         if suggested and suggested > current_end:
             message += '\n' + _(
                 'Estimación propia (TaskJuggler no calcula este valor): '
-                'extienda el campo "Horizonte de planificación" hasta al '
+                'extienda el campo "Fecha de vencimiento" hasta al '
                 'menos %(date)s, o agregue más recursos a las tareas.'
             ) % {'date': suggested}
         else:
             message += '\n' + _(
-                'Extienda el campo "Horizonte de planificación" o agregue '
+                'Extienda el campo "Fecha de vencimiento" o agregue '
                 'más recursos a las tareas.'
             )
         return message
 
     def _tjp_suggest_horizon(self, start):
         """Estimación propia (no la calcula TJ3) de hasta cuándo extender el
-        horizonte para que el esfuerzo del recurso más cargado entre."""
+        horizonte para que el esfuerzo del recurso más cargado entre.
+
+        Bug real (2026-07-29, datos de producción): la duración estimada
+        siempre se sumaba desde `start` (`date_start`) solo, sin mirar el
+        horizonte YA configurado (`self.date`). Con un proyecto viejo (
+        `date_start` lejano) y `self.date` ya extendido varias veces a
+        mano, la cuenta a secas podía dar una fecha MENOR a la ya puesta —
+        el botón "Extender horizonte de planificación" del wizard
+        (`insight.unscheduled.tasks.wizard.action_extend_horizon`)
+        terminaba ENCOGIENDO el horizonte en vez de ampliarlo, así que
+        volver a programar fallaba de nuevo con el mismo "N tareas no
+        entran" (confirmado contra el historial real de tracking del
+        proyecto: `date` pasó de 2029-08-31 a 2029-08-16 al apretar
+        "Extender"). El piso en `max(start, self.date)` garantiza que
+        extender siempre avanza, nunca retrocede."""
         self.ensure_one()
         worst_days = 0.0
         for user in self._tj_project_users():
@@ -428,7 +473,8 @@ class ProjectProject(models.Model):
         if not worst_days:
             return None
         buffer_days = max(worst_days * 0.15, 14)
-        return start + timedelta(days=int(worst_days + buffer_days))
+        floor = max(start, self.date) if self.date else start
+        return floor + timedelta(days=int(worst_days + buffer_days))
 
     def action_view_gantt(self):
         self.ensure_one()
@@ -1694,36 +1740,54 @@ class ProjectProject(models.Model):
         return f'm{milestone.id}'
 
     def _tjp_dep_ancestors_active(self, dep):
-        """True si toda la cadena de ancestros de `dep` (dentro del alcance
-        de este export — `self`, ver _generate_tjp/_tj_portfolio_recordset)
-        está activa y termina en una raíz realmente renderizable. `dep`
-        mismo ya se filtra con `.filtered('active')` antes de llegar acá,
-        pero `_tjp_task_abs_path` arma el path caminando `parent_id` crudo,
-        sin chequear `active` en cada ancestro — si un ancestro está
-        archivado (ej.: tarea contenedora marcada terminada), la recursión
-        de `_generate_tjp` nunca desciende a sus hijos (aunque sigan
-        activos) y ese padre nunca se declara como `task` en el .tjp. El
-        path resultante (ej. `t_padre.t_dep`) apunta a un anidamiento que
-        TJ3 nunca vio declarado → "has unknown depends", aunque `dep` en sí
-        esté activo. Bug real reproducido con una tarea + su hito dados por
-        completados y archivados, cuya sub-tarea seguía activa y bloqueando
-        otra tarea del proyecto.
+        """True si `dep` queda genuinamente declarado como `task` en el .tjp
+        que arma `_generate_tjp` para este alcance (`self`, ver
+        _generate_tjp/_tj_portfolio_recordset). `dep` mismo ya se filtra con
+        `.filtered('active')` antes de llegar acá, pero eso no alcanza: hay
+        DOS motivos independientes por los que un ancestro (o el propio
+        `dep`, si es raíz) puede cortar la recursión sin que `dep.active`
+        lo delate:
 
-        Mismo síntoma, causa distinta: una subtarea cross-proyecto (Odoo
+        1) Un ancestro ARCHIVADO (`active=False`): `_tjp_task_abs_path` arma
+           el path caminando `parent_id` crudo, sin chequear `active` en
+           cada ancestro — si un ancestro está archivado, la recursión de
+           `_generate_tjp` nunca desciende a sus hijos (aunque sigan
+           activos) y ese padre nunca se declara como `task`. Bug real
+           reproducido con una tarea + su hito dados por completados y
+           archivados, cuya sub-tarea seguía activa y bloqueando otra tarea
+           del proyecto.
+
+        2) La RAÍZ de la cadena (el propio `dep` si no tiene padre, o el
+           ancestro sin `parent_id`) con `state` CERRADO (Hecho/Cancelado)
+           pero `active=True`: `project.project.task_ids` — el campo que
+           `_generate_tjp` usa para encontrar las raíces — trae un dominio
+           nativo de Odoo (`[('state', 'in', OPEN_STATES)]`) que excluye
+           cualquier tarea "Hecha"/"Cancelada" de ese recorrido, sin
+           importar `active`. Archivar y marcar terminada son acciones
+           independientes en Odoo (no hay ninguna que implique la otra):
+           una raíz marcada terminada SIN archivar deja toda su rama
+           activa invisible para TJ3 igual que un ancestro archivado —
+           mismo síntoma ("has unknown depends"), causa distinta. Bug real
+           encontrado 2026-07-29 con datos reales de producción (tarea raíz
+           "Eje 0", `active=True`, `state='1_done'`, con 3 subtareas
+           activas bloqueando otra rama del proyecto) — el chequeo de
+           `active` de (1) no lo detectaba porque la raíz en sí SEGUÍA
+           activa.
+
+        Mismo síntoma, tercera causa: una subtarea cross-proyecto (Odoo
         permite que `parent_id` pertenezca a un proyecto distinto del
         propio `project_id`, ver project.task) cuyo padre real queda fuera
         de `self` tampoco se declara nunca como `task` — la cadena de
-        ancestros nunca llega a una raíz renderizable (`not parent_id`)
-        dentro del alcance exportado, se corta contra un proyecto que ni
-        forma parte de esta corrida. En ese caso el `while` termina con `t`
-        todavía con valor (no una raíz real) y hay que tratarlo igual que
-        un ancestro archivado."""
-        t = dep.parent_id
-        while t and t.project_id in self:
+        ancestros nunca llega a una raíz dentro del alcance exportado, se
+        corta contra un proyecto que ni forma parte de esta corrida."""
+        t = dep
+        while t.parent_id and t.parent_id.project_id in self:
+            t = t.parent_id
             if not t.active:
                 return False
-            t = t.parent_id
-        return not t
+        if t.parent_id:
+            return False
+        return t.state not in CLOSED_STATES
 
     def _tjp_task_abs_path(self, dep, owner=None):
         """Referencia a `dep` tal como la resuelve TJ3 en un `depends`/
