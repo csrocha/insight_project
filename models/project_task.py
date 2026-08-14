@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import statistics
+
 from markupsafe import Markup
 
 from odoo import models, fields, api, _
@@ -54,6 +56,43 @@ class ProjectTask(models.Model):
     bsi = fields.Char(
         string='BSI', compute='_compute_scheduled', store=True,
     )
+    source_task_id = fields.Many2one(
+        'project.task', string='Tarea origen (clon de)',
+        readonly=True, copy=False, ondelete='set null',
+        help='Tarea de la que se clonó esta, seteada automáticamente al '
+             'clonar un proyecto (project.project.action_clone) — nunca a '
+             'mano. Encadenada a través de toda la cadena de clones, se usa '
+             'para calibrar allocated_hours con la mediana de horas reales '
+             'históricas de esta misma tarea lógica.',
+    )
+
+    def _get_calibration_chain(self):
+        """Recorre self + ancestros vía source_task_id. Devuelve (lista de
+        effective_hours, recordset de tareas) restringido a instancias cuyo
+        proyecto llegó a Finalizado y que tienen horas reales cargadas — la
+        mediana de una ejecución sin timesheets no aporta ninguna señal."""
+        hours = []
+        contributing = self.browse()
+        seen = set()
+        task = self
+        while task and task.id not in seen:
+            seen.add(task.id)
+            if task.project_id.state == 'done' and task.effective_hours > 0:
+                hours.append(task.effective_hours)
+                contributing |= task
+            task = task.source_task_id
+        return hours, contributing
+
+    def _get_calibrated_allocated_hours(self):
+        self.ensure_one()
+        hours, _contributing = self._get_calibration_chain()
+        return statistics.median(hours) if hours else self.allocated_hours
+
+    def copy(self, default=None):
+        default = dict(default or {})
+        default.setdefault('source_task_id', self.id)
+        default.setdefault('allocated_hours', self._get_calibrated_allocated_hours())
+        return super().copy(default)
 
     def _tj_dependency_type_for(self, dep):
         """Tipo de dependencia TJ3 efectivo hacia el bloqueante `dep`: el

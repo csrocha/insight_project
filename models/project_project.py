@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pytz
 from markupsafe import Markup
 
-from odoo import _, fields, models
+from odoo import Command, _, fields, models
 from odoo.addons.project.models.project_task import CLOSED_STATES
 from odoo.exceptions import UserError
 from odoo.tools import config as odoo_config
@@ -88,8 +88,66 @@ class ProjectProject(models.Model):
     scenario_weight_cost = fields.Float(string='Peso: costo', default=1.0)
     scenario_weight_duration = fields.Float(string='Peso: duración', default=1.0)
     scenario_weight_resources = fields.Float(string='Peso: recursos', default=1.0)
+    template_project_id = fields.Many2one(
+        'project.project', string='Clonado de',
+        readonly=True, copy=False, ondelete='set null',
+    )
+    clone_ids = fields.One2many(
+        'project.project', 'template_project_id', string='Clones',
+    )
 
     # ── Public actions ────────────────────────────────────────────────────────
+
+    def action_clone(self):
+        """Crea un proyecto nuevo en Draft con la misma estructura de tareas
+        y asignaciones (ver project.task.copy(), que calibra allocated_hours
+        con la mediana histórica de horas reales de la cadena de clones), y
+        arranca un único escenario baseline nuevo — los escenarios viejos no
+        se heredan (ver _seed_baseline_scenario)."""
+        self.ensure_one()
+        if self.state != 'done':
+            raise UserError(_('Solo se pueden clonar proyectos Finalizados.'))
+        new_project = self.copy(default={
+            'name': _('%s (clon)', self.name),
+            'state': 'draft',
+            'template_project_id': self.id,
+            'scenario_ids': [],
+            'schedule_dirty': False,
+            'last_scheduled': False,
+        })
+        new_project._seed_baseline_scenario()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'project.project',
+            'res_id': new_project.id,
+            'view_mode': 'form',
+            'target': 'current',
+        }
+
+    def _seed_baseline_scenario(self):
+        """Arma el único escenario baseline del clon. Los recursos que ya
+        aportaron horas reales calibradas a alguna tarea (ver
+        project.task._get_calibration_chain) se cargan con efficiency=1: el
+        promedio calibrado de horas ya incorpora su rendimiento real, así
+        que un efficiency extra encima duplicaría el ajuste. Los recursos
+        sin historia en ninguna tarea quedan sin override, a criterio manual
+        del administrador del proyecto."""
+        self.ensure_one()
+        tasks = self.env['project.task'].with_context(active_test=False).search([
+            ('project_id', '=', self.id), ('source_task_id', '!=', False),
+        ])
+        involved_users = self.env['res.users']
+        for task in tasks:
+            _hours, contributing = task.source_task_id._get_calibration_chain()
+            involved_users |= contributing.mapped('user_ids')
+        self.scenario_ids = [Command.create({
+            'name': _('Baseline'),
+            'is_baseline': True,
+            'efficiency_ids': [
+                Command.create({'user_id': user.id, 'efficiency': 1.0})
+                for user in involved_users
+            ],
+        })]
 
     def action_export_tjp(self):
         self.ensure_one()

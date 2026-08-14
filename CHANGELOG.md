@@ -9,6 +9,84 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.7.23] - 2026-08-11
+
+### Prompt
+
+> Quiero que revises el backlog de los addons de projects para ver quedó
+> alguna tarea pendiente de esta linea de desarrollo. [...] Corrije las
+> entradas desactualizadas y avanza con el item 8 de insight_project.
+
+### Discusión de diseño
+
+Ítem 8 del `BACKLOG.md` (clonar proyecto + concepto de "template",
+pospuesto desde 2026-07-14 al diseñar los estados de portfolio
+scheduling) quedó con 4 gaps de diseño explícitos sin resolver. Antes de
+codear se confirmaron con el usuario los dos que eran decisiones de
+producto genuinas: el botón "Clonar" solo se puede disparar desde un
+proyecto **Finalizado**, y solo cuentan para la mediana histórica las
+ejecuciones de tareas cuyo proyecto también llegó a Finalizado (no
+ejecuciones parciales de un proyecto en curso).
+
+Los otros dos gaps se resolvieron solos investigando el código: la fuente
+de horas reales ya existía (`task.effective_hours`, agregado stored de
+`hr_timesheet` sobre `timesheet_ids`), y el remapeo de `depend_on_ids`
+entre tareas clonadas ya lo resuelve Odoo nativo
+(`project.task.copy()`, vía `context['task_mapping']` acumulado en toda
+la recursión de `child_ids`) — no hizo falta tocar nada ahí, solo
+cubrirlo con un test de regresión.
+
+El punto de enganche elegido fue **`project.task.copy()`** en vez de
+`_map_tasks_default_valeus` (el hook que usa `project.project.map_tasks`):
+investigando el código nativo, ese hook solo corre para las tareas
+**raíz** — las subtareas se clonan recursivamente dentro del propio
+`task.copy()` (`child.copy({'name': child.name})`), sin pasar por ese
+hook. Overridear `copy()` directamente cubre ambos caminos con un solo
+punto de verdad, y de paso aplica la identidad/calibración a cualquier
+copia de tarea (incluida la "Duplicar" nativa de Odoo), no solo al botón
+nuevo — no había ninguna razón para que el comportamiento dependa del
+camino de entrada.
+
+Se encontró un problema real al diseñar el reseteo del clon:
+`scenario_ids` es un `One2many` sin `copy=False`, así que la copia nativa
+de proyecto arrastraría escenarios viejos (`insight.scenario` con
+`schedule_ids` apuntando a `insight.task.schedule.task_id` de las tareas
+**originales**, no de las clonadas) — datos de scheduling stale/rotos
+colgando de un proyecto recién creado en Draft. Se resolvió pasando
+`default={'scenario_ids': []}` en el `copy()` de `action_clone` (anula
+el auto-copy de ese one2many puntual sin tocar el atributo `copy` del
+field, así que no afecta la "Duplicar" nativa fuera de este flujo). En su
+lugar, `_seed_baseline_scenario` arma un único escenario "Baseline" nuevo,
+con `efficiency=1.0` solo para los recursos que ya aportaron horas reales
+calibradas a alguna tarea del clon (el promedio calibrado ya incorpora su
+rendimiento real, un efficiency extra encima lo duplicaría) — los
+recursos sin historia quedan sin override, a criterio manual, tal cual
+pedía el BACKLOG. `cost_budget_ids` (catálogo de costos infra/SaaS) sí se
+deja con el comportamiento nativo de copia: a diferencia de los
+escenarios, es config reutilizable entre ciclos del mismo proyecto, no
+un artefacto de una corrida pasada.
+
+Nuevos campos: `project.task.source_task_id` y
+`project.project.template_project_id`/`clone_ids` (todos `readonly`,
+`copy=False`) — la identidad de tarea a través de la cadena de clones se
+recorre encadenando `source_task_id` hacia atrás
+(`_get_calibration_chain`), filtrando por proyecto Finalizado y
+`effective_hours > 0`, y tomando la mediana (`statistics.median`) — sin
+recorte de outliers por complejidad, tal cual se había decidido al anotar
+el ítem en el backlog. Sin ningún dato histórico (tarea nueva o cadena
+sin timesheets cargados), se conserva el `allocated_hours` original.
+
+Botón "Clonar" en el header de `project.project` (mismo patrón
+`type="object"` que "Replanificar"/"Exportar TJP"), visible solo con
+`state == 'done'`, con `confirm=` en vez de un wizard dedicado (no hay
+inputs de usuario que pedir).
+
+6 tests nuevos (`tests/test_clone_project.py`): guard de estado, mediana
+de una sola muestra, mediana encadenada a través de dos generaciones de
+clones, fallback sin timesheets, reseteo de escenarios + siembra de
+efficiency, y remapeo de dependencias. 323/323 tests de `insight_project`
+en verde.
+
 ## [17.0.9.7.22] - 2026-07-29
 
 ### Prompt

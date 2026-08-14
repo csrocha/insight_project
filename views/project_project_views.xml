@@ -14,6 +14,10 @@
                         invisible="not is_tj_enabled"/>
                 <button name="action_open_import_wizard" type="object"
                         string="Importar TJP..." class="btn-secondary"/>
+                <button name="action_clone" type="object"
+                        string="Clonar" icon="fa-copy"
+                        confirm="Se creará un proyecto nuevo en Borrador con la misma estructura, calibrado con las horas reales de este proyecto. ¿Continuar?"
+                        invisible="state != 'done'"/>
             </xpath>
             <xpath expr="//notebook" position="inside">
                 <page string="Scheduler" name="tashjuggler">

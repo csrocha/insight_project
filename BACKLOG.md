@@ -132,7 +132,16 @@ tienen todavía un módulo/archivo `BACKLOG.md` propio._
 
 ## De la conversación de hoy (2026-07-14)
 
-### 8. Clonar proyecto + concepto de "proyecto template" (calibración histórica de esfuerzo)
+### ~~8. Clonar proyecto + concepto de "proyecto template" (calibración histórica de esfuerzo)~~ — RESUELTO
+
+Resuelto en v17.0.9.7.23 (2026-08-11): botón "Clonar" (solo desde
+Finalizado) + `project.task.source_task_id`/`_get_calibration_chain`
+(mediana de `effective_hours` a través de la cadena de clones, filtrando
+por proyecto Finalizado) + `project.project.template_project_id`/
+`clone_ids`/`_seed_baseline_scenario`. Los 4 gaps de diseño de abajo ya
+están resueltos (ver CHANGELOG.md para el detalle completo de cada uno).
+Queda tal cual el diseño original abajo, como registro de la discusión
+que lo motivó.
 
 Surgió al diseñar los botones de estado de portfolio scheduling (draft/
 evaluación/progreso/finalizado, ver CHANGELOG — campo `state` +
@@ -212,22 +221,30 @@ Detectadas leyendo el export (`_generate_tjp`/`_tjp_task_block`/
 `_tjp_reports`) mientras se investigaba el bug de hoy — no vinieron de
 ninguna conversación previa, quedan acá para discutir si valen la pena:
 
-- El `taskreport` del reschedule por proyecto
-  (`_tjp_reports`) no incluye la columna `complete` (el wizard de import
-  externo sí la usa). Sin ella, no hay forma de traer de vuelta el
-  % de avance que calcula TJ3 — el único mecanismo de "task vencida"
-  hoy es el heurístico de `_cron_flag_changes_requested`
-  (fecha vencida u horas agotadas en camino crítico).
+- ~~El `taskreport` del reschedule por proyecto (`_tjp_reports`) no
+  incluye la columna `complete`~~ — RESUELTO. `_tjp_reports`
+  (`models/project_project.py:1217`/`:1229`) ya declara `complete` entre
+  las columnas del reporte, y `_parse_tj_complete` (línea 2341) la parsea
+  de vuelta a `insight.task.schedule.complete`. Ver CHANGELOG.md.
 
 ---
 
 ## De la conversación de hoy (2026-07-28)
 
-### 9. Tareas coordinadas para la fecha de hoy deben quedar asignadas a hoy
+### ~~9. Tareas coordinadas para la fecha de hoy deben quedar asignadas a hoy~~ — VERIFICADO, no reproducible
 
-Pedido del usuario: las tareas que el scheduling (TJ3) coordina/agenda
-para la fecha de hoy tienen que quedar asignadas para hoy (no para otra
-fecha). Anotado tal cual lo pidió el usuario — falta precisar contra el
-código actual (`insight.task.schedule`, `_tjp_reports`/import de vuelta)
-si esto ya pasa y hay un caso puntual que falla, o si falta implementarlo
-en general.
+Verificado (2026-08-11): no se encontró ningún caso puntual que falle, ni
+falta nada que implementar. `_tjp_now_date` (`models/project_project.py`)
+ya garantiza que el `now` declarado a TJ3 nunca queda antes de hoy
+(`max(fields.Date.today(), date_start más temprano)`) — TJ3 nunca puede
+agendar trabajo en el pasado respecto a esa fecha, así que una tarea que
+el scheduler coordina para "hoy" necesariamente arranca hoy o después,
+nunca antes. El parseo de vuelta (`_parse_tj_schedule_csv`/
+`_parse_tj_datetime`) es un pasamano fiel de lo que devuelve TJ3, sin
+truncar ni corregir fechas — no hace falta, porque la garantía ya vive
+del lado de `now`. Cubierto por los tests ya existentes
+`test_now_reflects_todays_date_not_pinned_to_date_start` y
+`test_now_never_before_date_start` (`tests/test_tjp_export.py:66-80`), que
+no fue necesario ampliar. Consultado con el usuario: no había un caso
+concreto que reproducir, era una duda — se cierra como verificado sin
+tocar lógica.
