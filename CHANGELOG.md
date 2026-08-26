@@ -9,6 +9,99 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.8.0] - 2026-08-26
+
+### Prompt
+
+> En el project insight no le puedo asignar un escenario preexistente al
+> proyecto, hay que cambiar la vista para que pueda asignar y seleccionar
+> preexistentes.
+
+### Discusión de diseño
+
+`insight.scenario.project_id` era un `Many2one` requerido con
+`ondelete='cascade'`, y `project.project.scenario_ids` su inverso
+`One2many` — por eso la vista solo dejaba crear un escenario nuevo inline,
+nunca elegir uno ya existente (eso es exclusivo de un Many2many/selector).
+El usuario confirmó que un escenario no tiene nada que lo ate a un único
+proyecto y prefirió mutar la relación en vez de agregar un botón de
+"clonar".
+
+El relevamiento de código mostró que `is_baseline` (hoy un `Boolean` plano
+en `insight.scenario`) se lee/escribe en ~15 lugares (selección automática
+de escenario, export TJP, congelado de baseline, reportes de costo/riesgo/
+desviación, Gantt) siempre asumiendo el proyecto único del escenario. Una
+Many2many simple hubiera dejado ambiguo qué significa "is_baseline" para
+un escenario compartido — el usuario eligió explícitamente que sea una
+propiedad de **(escenario, proyecto)**, no del escenario solo. Eso exige
+un modelo intermedio, no una Many2many directa: `insight.scenario.project`
+(`scenario_id`, `project_id`, `is_baseline`), con `_sql_constraints` que
+impide vincular el mismo escenario dos veces al mismo proyecto.
+
+Las acciones que necesitaban "el" proyecto del escenario
+(`action_generate_reports` y sus overrides en `insight_project_risk`,
+`insight_project_sale`, `website_report_project`) se trasladaron al modelo
+intermedio, donde `project_id`/`scenario_id` ya no son ambiguos —
+`insight.scenario` conserva `report_count`/`action_view_cost_reports`
+(agregan por `res_id=scenario.id` sin depender de un proyecto único).
+`_tjp_scenario_id` pasa a recibir el vínculo en vez de derivar el proyecto
+del escenario, y el resto de `project_project.py` que operaba sobre
+`self.scenario_ids.filtered('is_baseline')` pasa a operar sobre
+`self.scenario_link_ids.filtered('is_baseline')`.
+
+Limitación conocida, no resuelta en esta entrega: los `knowledge.asset` de
+reportes siguen guardándose con `res_model='insight.scenario'` — si el
+mismo escenario se comparte y se generan reportes desde dos proyectos
+distintos, quedan mezclados sin distinguir de cuál proyecto salió cada
+uno. Tampoco hay limpieza automática de un escenario que se queda sin
+ningún proyecto vinculado (antes se borraba solo por el `ondelete=cascade`
+de `project_id`) — queda visible en el menú Escenarios hasta que alguien
+lo borre a mano.
+
+Migración de datos en `migrations/17.0.9.8.0/post-migrate.py`, no
+`pre-migrate.py` como el precedente de 17.0.9.5.0 (`skill_id`→`skill_ids`,
+una Many2many pura sin columnas propias): acá el destino es un modelo
+completo con su propio `is_baseline` y columnas de auditoría, así que es
+más simple dejar que `_auto_init` cree la tabla `insight_scenario_project`
+con el esquema correcto y copiar los datos recién después — Odoo no borra
+columnas que un modelo deja de declarar, así que `project_id`/`is_baseline`
+seguían existiendo físicamente en `insight_scenario` en ese punto.
+
+### Añadido
+
+- Modelo `insight.scenario.project` (`models/insight_scenario_project.py`):
+  vínculo escenario↔proyecto con `is_baseline` propio.
+- `insight.scenario.project_ids`/`project_link_ids`: proyectos vinculados a
+  un escenario, computados desde el modelo intermedio.
+- Pestaña "Proyectos" en el form de `insight.scenario`, para vincular el
+  escenario a más proyectos desde su propia ficha.
+- `migrations/17.0.9.8.0/post-migrate.py`: migra los datos existentes de
+  `insight_scenario.project_id`/`is_baseline` a la tabla nueva.
+
+### Modificado
+
+- `project.project.scenario_ids` (One2many a `insight.scenario`) se
+  reemplaza por `scenario_link_ids` (One2many a `insight.scenario.project`)
+  — único campo, sin mantener los dos en paralelo. La tabla embebida en la
+  pestaña Scheduler del proyecto ahora tiene como primera columna un
+  `Many2one` a escenario (editable, con autocompletar): esto es lo que
+  resuelve el pedido — permite elegir un escenario existente en vez de
+  solo poder crear uno nuevo.
+- `insight.scenario.project_id`/`is_baseline` se eliminan; `_order` pasa
+  de `'project_id, is_baseline desc, name'` a `'name'`; el domain de
+  `cost_budget_ids` pasa de `project_id = X` a `project_id in project_ids`
+  (catálogo de costos = unión de los proyectos vinculados).
+- `action_generate_reports` (y sus overrides en `insight_project_risk`,
+  `insight_project_sale`, `website_report_project`) se trasladan de
+  `insight.scenario` a `insight.scenario.project`; los archivos
+  `models/insight_scenario.py` de esos tres addons se renombran a
+  `insight_scenario_project.py`.
+- `project_project.py`: todos los métodos que resolvían el escenario
+  baseline vía `scenario_ids.filtered('is_baseline')` pasan a
+  `scenario_link_ids.filtered('is_baseline')` (selección de escenario,
+  export/import TJP, congelado de baseline, Gantt, reporte de impacto de
+  evaluación de portfolio).
+
 ## [17.0.9.7.23] - 2026-08-11
 
 ### Prompt

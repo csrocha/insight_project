@@ -499,18 +499,21 @@ class InsightImportWizard(models.TransientModel):
             base = filename.rsplit('.', 1)[0]
             sc_key = base[len('schedule_'):] if base.startswith('schedule_') else base
 
-            scenario = project.scenario_ids.filtered(
-                lambda s: s.name.lower() == sc_key.lower()
+            scenario_link = project.scenario_link_ids.filtered(
+                lambda l: l.scenario_id.name.lower() == sc_key.lower()
             )[:1]
-            if not scenario:
+            if not scenario_link:
                 scenario = self.env['insight.scenario'].create({
                     'name': sc_key.title(),
-                    'project_id': project.id,
-                    'is_baseline': not bool(project.scenario_ids),
                 })
-                project.invalidate_recordset(['scenario_ids'])
+                scenario_link = self.env['insight.scenario.project'].create({
+                    'scenario_id': scenario.id,
+                    'project_id': project.id,
+                    'is_baseline': not bool(project.scenario_link_ids),
+                })
+                project.invalidate_recordset(['scenario_link_ids'])
 
-            project._import_scenario_csv(csv_content, scenario)
+            project._import_scenario_csv(csv_content, scenario_link)
 
         project._sync_gantt_dates()
 

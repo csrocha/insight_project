@@ -1,6 +1,7 @@
 from . import res_config_settings
 from . import insight_cost_budget
 from . import insight_scenario
+from . import insight_scenario_project
 from . import insight_task_schedule
 from . import insight_task_dependency
 from . import insight_employee_shift

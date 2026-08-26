@@ -26,9 +26,7 @@ class TestGanttSchedulePayload(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Gantt Payload Project', 'is_tj_enabled': True,
         })
-        cls.plan = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.plan = cls.env['insight.scenario'].create({'name': 'Plan'})
         cls.root = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id,
         })
@@ -110,9 +108,7 @@ class TestComputeAndSaveGanttReport(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Gantt Asset Project', 'is_tj_enabled': True,
         })
-        cls.plan = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.plan = cls.env['insight.scenario'].create({'name': 'Plan'})
         cls.task = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id,
         })
@@ -154,7 +150,10 @@ class TestComputeAndSaveGanttReport(TransactionCase):
         """El botón 'Actualizar reportes' (insight.scenario.
         action_generate_reports) dispara costo+Gantt en un solo click."""
         self._seed_schedule()
-        self.plan.action_generate_reports()
+        link = self.env['insight.scenario.project'].create({
+            'scenario_id': self.plan.id, 'project_id': self.project.id, 'is_baseline': True,
+        })
+        link.action_generate_reports()
 
         count = self.env['knowledge.asset'].search_count([
             ('res_model', '=', 'project.project'), ('res_id', '=', self.project.id),
@@ -171,9 +170,7 @@ class TestActionViewGantt(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Gantt Guard Project', 'is_tj_enabled': True,
         })
-        cls.plan = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.plan = cls.env['insight.scenario'].create({'name': 'Plan'})
 
     def test_raises_without_a_prior_schedule_run(self):
         with self.assertRaises(UserError):
@@ -396,9 +393,7 @@ class TestReportGanttReportSvg(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Report Model Gantt Project', 'is_tj_enabled': True,
         })
-        cls.plan = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.plan = cls.env['insight.scenario'].create({'name': 'Plan'})
         cls.task = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id,
         })

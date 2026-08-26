@@ -7,19 +7,30 @@ from odoo import _, api, models, fields
 class InsightScenario(models.Model):
     _name = 'insight.scenario'
     _description = 'Planning Scenario'
-    _order = 'project_id, is_baseline desc, name'
+    _order = 'name'
 
     name = fields.Char(required=True)
-    project_id = fields.Many2one('project.project', required=True, ondelete='cascade')
-    is_baseline = fields.Boolean()
+    # Un escenario es compartible entre proyectos (ej. una plantilla de
+    # eficiencias reusada) — is_baseline vive en el vínculo, no acá, porque
+    # ser "el" baseline es una propiedad de (escenario, proyecto), no del
+    # escenario solo (ver insight.scenario.project).
+    project_link_ids = fields.One2many('insight.scenario.project', 'scenario_id')
+    project_ids = fields.Many2many(
+        'project.project', string='Proyectos', compute='_compute_project_ids',
+    )
     efficiency_ids = fields.One2many('insight.scenario.efficiency', 'scenario_id')
     schedule_ids = fields.One2many('insight.task.schedule', 'scenario_id')
     cost_budget_ids = fields.Many2many(
         'insight.cost.budget', string='Costos extra',
-        domain="[('project_id', '=', project_id)]",
-        help='Costos de infraestructura/SaaS del catálogo del proyecto que aplican '
-             'a este escenario.',
+        domain="[('project_id', 'in', project_ids)]",
+        help='Costos de infraestructura/SaaS del catálogo de cualquiera de los '
+             'proyectos vinculados que aplican a este escenario.',
     )
+
+    @api.depends('project_link_ids.project_id')
+    def _compute_project_ids(self):
+        for scenario in self:
+            scenario.project_ids = scenario.project_link_ids.project_id
 
     # Agregados calculados por project.project._apply_selection_strategy() luego
     # de cada corrida del schedule — no son fields computados porque dependen de
@@ -78,7 +89,7 @@ class InsightScenario(models.Model):
                 continue
             rate = budget.currency_id._convert(
                 budget.amount, company_currency,
-                self.project_id.company_id or self.env.company, today,
+                self.project_ids[:1].company_id or self.env.company, today,
             )
             if budget.periodicity == 'one_time':
                 yield budget, rate
@@ -151,24 +162,6 @@ class InsightScenario(models.Model):
                 ]),
             ],
         }
-
-    def action_generate_reports(self):
-        """El botón real vive acá (por escenario); project.project solo
-        expone un wrapper de conveniencia que resuelve el baseline (ver
-        project.project.action_generate_reports). Corre cada reporte
-        aplicable: costo y Gantt siempre (el Gantt no es por escenario,
-        agrega todos los del proyecto — ver
-        project.project._compute_and_save_gantt_report); desviación
-        baseline vs. real solo si el proyecto está en ejecución (necesita
-        avance real, no solo proyección — ver
-        project.project._compute_and_save_deviation_report, que también
-        valida esto por su cuenta)."""
-        self.ensure_one()
-        result = self.project_id._compute_and_save_cost_reports(self)
-        self.project_id._compute_and_save_gantt_report()
-        if self.project_id.state == 'progress':
-            self.project_id._compute_and_save_deviation_report(self)
-        return result
 
 
 class InsightScenarioEfficiency(models.Model):

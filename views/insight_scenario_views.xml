@@ -6,8 +6,7 @@
         <field name="arch" type="xml">
             <tree>
                 <field name="name"/>
-                <field name="project_id"/>
-                <field name="is_baseline"/>
+                <field name="project_ids" widget="many2many_tags"/>
                 <field name="total_cost"/>
                 <field name="extra_cost"/>
                 <field name="grand_total_cost"/>
@@ -30,14 +29,9 @@
                             <field name="report_count" widget="statinfo" string="Reportes"/>
                         </button>
                     </div>
-                    <div class="mb16">
-                        <button name="action_generate_reports" type="object"
-                                string="Generar reportes" class="btn-secondary"/>
-                    </div>
                     <group>
                         <field name="name"/>
-                        <field name="project_id"/>
-                        <field name="is_baseline"/>
+                        <field name="project_ids" invisible="1"/>
                         <field name="cost_budget_ids" widget="many2many_tags"/>
                     </group>
                     <group string="Resultado del último schedule">
@@ -49,6 +43,14 @@
                         <field name="selection_score" readonly="1"/>
                     </group>
                     <notebook>
+                        <page string="Proyectos">
+                            <field name="project_link_ids">
+                                <tree editable="bottom">
+                                    <field name="project_id"/>
+                                    <field name="is_baseline"/>
+                                </tree>
+                            </field>
+                        </page>
                         <page string="Eficiencias">
                             <field name="efficiency_ids">
                                 <tree editable="bottom">

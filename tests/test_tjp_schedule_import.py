@@ -95,8 +95,9 @@ class TestImportScenarioCsv(TransactionCase):
             'name': 'CSV Import Project',
             'is_tj_enabled': True,
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.scenario = cls.env['insight.scenario.project'].create({
+            'scenario_id': scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.task1 = cls.env['project.task'].create({'name': 'Task 1', 'project_id': cls.project.id})
         cls.task2 = cls.env['project.task'].create({'name': 'Task 2', 'project_id': cls.project.id})
@@ -116,7 +117,7 @@ class TestImportScenarioCsv(TransactionCase):
     def test_creates_schedule_record_from_csv_row(self):
         self.project._import_scenario_csv(self._csv(self.task1.id), self.scenario)
         schedule = self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task1.id), ('scenario_id', '=', self.scenario.id),
+            ('task_id', '=', self.task1.id), ('scenario_id', '=', self.scenario.scenario_id.id),
         ])
         self.assertEqual(len(schedule), 1)
         self.assertEqual(schedule.effort_days, 5.0)
@@ -128,13 +129,13 @@ class TestImportScenarioCsv(TransactionCase):
         other_project = self.env['project.project'].create({'name': 'Other Project'})
         outside_task = self.env['project.task'].create({'name': 'Outside', 'project_id': other_project.id})
         self.project._import_scenario_csv(self._csv(outside_task.id), self.scenario)
-        self.assertFalse(self.env['insight.task.schedule'].search([('scenario_id', '=', self.scenario.id)]))
+        self.assertFalse(self.env['insight.task.schedule'].search([('scenario_id', '=', self.scenario.scenario_id.id)]))
 
     def test_reimport_replaces_previous_rows_for_the_scenario(self):
         self.project._import_scenario_csv(self._csv(self.task1.id, effort='5.0d'), self.scenario)
         self.project._import_scenario_csv(self._csv(self.task1.id, effort='8.0d'), self.scenario)
         schedules = self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task1.id), ('scenario_id', '=', self.scenario.id),
+            ('task_id', '=', self.task1.id), ('scenario_id', '=', self.scenario.scenario_id.id),
         ])
         self.assertEqual(len(schedules), 1, 'Re-importing must not accumulate stale rows')
         self.assertEqual(schedules.effort_days, 8.0)
@@ -188,11 +189,15 @@ class TestImportScenarioCsvMilestones(TransactionCase):
             'name': 'Milestone CSV Import Project',
             'is_tj_enabled': True,
         })
-        cls.baseline = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        _baseline_scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.baseline = cls.env['insight.scenario.project'].create({
+            'scenario_id': _baseline_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': True,
         })
-        cls.alternate = cls.env['insight.scenario'].create({
-            'name': 'Noai', 'project_id': cls.project.id, 'is_baseline': False,
+        _alternate_scenario = cls.env['insight.scenario'].create({'name': 'Noai'})
+        cls.alternate = cls.env['insight.scenario.project'].create({
+            'scenario_id': _alternate_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': False,
         })
         cls.milestone = cls.env['project.milestone'].create({
             'name': 'Go live', 'project_id': cls.project.id,
@@ -210,7 +215,7 @@ class TestImportScenarioCsvMilestones(TransactionCase):
 
     def test_milestone_row_does_not_create_task_schedule(self):
         self.project._import_scenario_csv(self._csv(f'm{self.milestone.id}'), self.baseline)
-        self.assertFalse(self.env['insight.task.schedule'].search([('scenario_id', '=', self.baseline.id)]))
+        self.assertFalse(self.env['insight.task.schedule'].search([('scenario_id', '=', self.baseline.scenario_id.id)]))
 
     def test_non_baseline_milestone_row_ignored(self):
         self.project._import_scenario_csv(self._csv(f'm{self.milestone.id}'), self.alternate)
@@ -234,11 +239,15 @@ class TestImportAllSchedules(TransactionCase):
             'name': 'Dispatch Project',
             'is_tj_enabled': True,
         })
-        cls.plan = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        _plan_scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.plan = cls.env['insight.scenario.project'].create({
+            'scenario_id': _plan_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': True,
         })
-        cls.noai = cls.env['insight.scenario'].create({
-            'name': 'Noai', 'project_id': cls.project.id,
+        _noai_scenario = cls.env['insight.scenario'].create({'name': 'Noai'})
+        cls.noai = cls.env['insight.scenario.project'].create({
+            'scenario_id': _noai_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': False,
         })
         cls.task = cls.env['project.task'].create({'name': 'Dispatch Task', 'project_id': cls.project.id})
 
@@ -255,9 +264,9 @@ class TestImportAllSchedules(TransactionCase):
         }
         imported = self.project._import_all_schedules(csv_files)
         self.assertEqual(imported, 2)
-        for scenario in (self.plan, self.noai):
+        for scenario_link in (self.plan, self.noai):
             self.assertTrue(self.env['insight.task.schedule'].search([
-                ('task_id', '=', self.task.id), ('scenario_id', '=', scenario.id),
+                ('task_id', '=', self.task.id), ('scenario_id', '=', scenario_link.scenario_id.id),
             ]))
 
     def test_ignores_files_with_no_matching_scenario(self):
@@ -275,11 +284,15 @@ class TestSyncGanttDates(TransactionCase):
             'name': 'Gantt Sync Project',
             'is_tj_enabled': True,
         })
-        cls.baseline = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        _baseline_scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.baseline = cls.env['insight.scenario.project'].create({
+            'scenario_id': _baseline_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': True,
         })
-        cls.alternate = cls.env['insight.scenario'].create({
-            'name': 'Noai', 'project_id': cls.project.id, 'is_baseline': False,
+        _alternate_scenario = cls.env['insight.scenario'].create({'name': 'Noai'})
+        cls.alternate = cls.env['insight.scenario.project'].create({
+            'scenario_id': _alternate_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': False,
         })
         cls.task = cls.env['project.task'].create({'name': 'Synced Task', 'project_id': cls.project.id})
         cls.assignee = cls.env['res.users'].with_context(no_reset_password=True).create({
@@ -327,7 +340,7 @@ class TestSyncGanttDates(TransactionCase):
 
     def test_noop_without_any_baseline_scenario(self):
         project = self.env['project.project'].create({'name': 'No Baseline Project', 'is_tj_enabled': True})
-        # Should not raise even though scenario_ids has no baseline flagged.
+        # Should not raise even though scenario_link_ids has no baseline flagged.
         project._sync_gantt_dates()
 
 
@@ -353,8 +366,10 @@ class TestRescheduleImportPreservesTaskStructure(TransactionCase):
             'name': 'Reschedule Structure Project',
             'is_tj_enabled': True,
         })
-        cls.baseline = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        _baseline_scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.baseline = cls.env['insight.scenario.project'].create({
+            'scenario_id': _baseline_scenario.id, 'project_id': cls.project.id,
+            'is_baseline': True,
         })
         cls.parent = cls.env['project.task'].create({'name': 'Parent', 'project_id': cls.project.id})
         cls.child = cls.env['project.task'].create({

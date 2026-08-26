@@ -102,11 +102,14 @@ class ProjectTask(models.Model):
         override = self.dependency_type_ids.filtered(lambda d: d.depends_on_id == dep)
         return override.dependency_type if override else self.tj_dependency_type
 
-    @api.depends('project_id.scenario_ids', 'project_id.scenario_ids.schedule_ids')
+    @api.depends(
+        'project_id.scenario_link_ids.is_baseline',
+        'project_id.scenario_link_ids.scenario_id.schedule_ids',
+    )
     def _compute_scheduled(self):
         for task in self:
-            baseline = task.project_id.scenario_ids.filtered('is_baseline')[:1]
-            if not baseline:
+            baseline_link = task.project_id.scenario_link_ids.filtered('is_baseline')[:1]
+            if not baseline_link:
                 task.start_scheduled = False
                 task.end_scheduled = False
                 task.is_critical_path = False
@@ -114,7 +117,7 @@ class ProjectTask(models.Model):
                 continue
             schedule = self.env['insight.task.schedule'].search([
                 ('task_id', '=', task.id),
-                ('scenario_id', '=', baseline.id),
+                ('scenario_id', '=', baseline_link.scenario_id.id),
             ], limit=1)
             task.start_scheduled = schedule.start_scheduled
             task.end_scheduled = schedule.end_scheduled

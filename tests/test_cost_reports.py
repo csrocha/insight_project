@@ -21,9 +21,7 @@ class TestCostByPhaseAndSkill(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Phase Skill Cost Project', 'is_tj_enabled': True,
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
         skill_type = cls.env['hr.skill.type'].create({
             'name': 'Phase Skill Cost Type',
             'skill_level_ids': [(0, 0, {
@@ -98,9 +96,7 @@ class TestCostByDepartment(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Department Cost Project', 'is_tj_enabled': True,
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
         cls.dept_dev = cls.env['hr.department'].create({'name': 'Desarrollo'})
         cls.dept_qa = cls.env['hr.department'].create({'name': 'QA'})
 
@@ -164,8 +160,9 @@ class TestComputeAndSaveCostReports(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Cost Reports E2E Project', 'is_tj_enabled': True, 'date_start': '2026-07-06',
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.scenario_link = cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.root = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id, 'allocated_hours': 40.0,
@@ -224,7 +221,7 @@ class TestComputeAndSaveCostReports(TransactionCase):
     def test_action_run_schedule_alone_creates_no_snapshot(self):
         """El disparo es explícito ('Generar reportes'), nunca
         automático en un reschedule normal."""
-        sc_id = self.project._tjp_scenario_id(self.scenario)
+        sc_id = self.project._tjp_scenario_id(self.scenario_link)
         csv_content = (
             '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness"\n'
             f'"t{self.root.id}";"1";"Fase 1";"2026-07-06";"2026-07-10";"5.0d";"5.0d";"";"0"\n'
@@ -253,9 +250,7 @@ class TestReportCostReportHtml(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Report Model Project', 'is_tj_enabled': True,
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
-        })
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
         cls.asset = cls.env['knowledge.asset'].create({
             'name': 'Costo por fase', 'res_model': 'insight.scenario',
             'res_id': cls.scenario.id, 'category': 'insight_project.cost_report',

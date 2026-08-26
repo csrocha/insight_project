@@ -105,7 +105,8 @@ class TestActionCloneCalibration(TransactionCase):
     def test_action_clone_resets_scenarios_seeds_baseline_efficiency(self):
         project = self._project()
         old_scenario = self.env['insight.scenario'].create({
-            'name': 'Old', 'project_id': project.id, 'is_baseline': True,
+            'name': 'Old',
+            'project_link_ids': [(0, 0, {'project_id': project.id, 'is_baseline': True})],
         })
         task = self.env['project.task'].create({
             'name': 'Fase 1', 'project_id': project.id, 'allocated_hours': 40.0,
@@ -118,10 +119,11 @@ class TestActionCloneCalibration(TransactionCase):
         project.state = 'done'
 
         new_project = self.env['project.project'].browse(project.action_clone()['res_id'])
-        self.assertEqual(len(new_project.scenario_ids), 1)
-        baseline = new_project.scenario_ids
+        self.assertEqual(len(new_project.scenario_link_ids), 1)
+        baseline_link = new_project.scenario_link_ids
+        baseline = baseline_link.scenario_id
         self.assertEqual(baseline.name, 'Baseline')
-        self.assertTrue(baseline.is_baseline)
+        self.assertTrue(baseline_link.is_baseline)
         self.assertEqual(len(baseline.efficiency_ids), 1)
         self.assertEqual(baseline.efficiency_ids.user_id, self.user)
         self.assertEqual(baseline.efficiency_ids.efficiency, 1.0)

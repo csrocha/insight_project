@@ -71,11 +71,13 @@ class TestMultiProjectGeneration(TransactionCase):
             'name': 'Task B', 'project_id': cls.project_b.id,
             'allocated_hours': 8.0, 'user_ids': [(6, 0, [cls.user.id])],
         })
-        cls.scenario_a = cls.env['insight.scenario'].create({
-            'name': 'Default', 'project_id': cls.project_a.id, 'is_baseline': True,
+        _scenario_a = cls.env['insight.scenario'].create({'name': 'Default'})
+        cls.scenario_a = cls.env['insight.scenario.project'].create({
+            'scenario_id': _scenario_a.id, 'project_id': cls.project_a.id, 'is_baseline': True,
         })
-        cls.scenario_b = cls.env['insight.scenario'].create({
-            'name': 'Default', 'project_id': cls.project_b.id, 'is_baseline': True,
+        _scenario_b = cls.env['insight.scenario'].create({'name': 'Default'})
+        cls.scenario_b = cls.env['insight.scenario.project'].create({
+            'scenario_id': _scenario_b.id, 'project_id': cls.project_b.id, 'is_baseline': True,
         })
 
     def test_tjp_scenario_id_is_qualified_by_project(self):
@@ -133,11 +135,13 @@ class TestImportAllSchedulesPortfolio(TransactionCase):
         cls.project_b = cls.env['project.project'].create({
             'name': 'Progress Peer Project', 'is_tj_enabled': True, 'state': 'progress',
         })
-        cls.scenario_a = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project_a.id, 'is_baseline': True,
+        _scenario_a = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.scenario_a = cls.env['insight.scenario.project'].create({
+            'scenario_id': _scenario_a.id, 'project_id': cls.project_a.id, 'is_baseline': True,
         })
-        cls.scenario_b = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project_b.id, 'is_baseline': True,
+        _scenario_b = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.scenario_b = cls.env['insight.scenario.project'].create({
+            'scenario_id': _scenario_b.id, 'project_id': cls.project_b.id, 'is_baseline': True,
         })
         cls.task_a = cls.env['project.task'].create({'name': 'Task A', 'project_id': cls.project_a.id})
         cls.task_b = cls.env['project.task'].create({'name': 'Task B', 'project_id': cls.project_b.id})
@@ -160,7 +164,7 @@ class TestImportAllSchedulesPortfolio(TransactionCase):
         imported = combined._import_all_schedules(csv_files, active_project=self.project_a)
         self.assertEqual(imported, 1)
         self.assertTrue(self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task_a.id), ('scenario_id', '=', self.scenario_a.id),
+            ('task_id', '=', self.task_a.id), ('scenario_id', '=', self.scenario_a.scenario_id.id),
         ]))
         self.assertFalse(
             self.env['insight.task.schedule'].search([('task_id', '=', self.task_b.id)]),
@@ -177,10 +181,10 @@ class TestImportAllSchedulesPortfolio(TransactionCase):
         }
         combined._import_all_schedules(csv_files, active_project=self.project_a)
         self.assertTrue(self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task_a.id), ('scenario_id', '=', self.scenario_a.id),
+            ('task_id', '=', self.task_a.id), ('scenario_id', '=', self.scenario_a.scenario_id.id),
         ]))
         self.assertTrue(self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task_b.id), ('scenario_id', '=', self.scenario_b.id),
+            ('task_id', '=', self.task_b.id), ('scenario_id', '=', self.scenario_b.scenario_id.id),
         ]), 'En modo progreso, los proyectos pares incluidos en la corrida sí se persisten')
 
     def test_evaluation_mode_reports_date_slip_for_peer_project(self):
@@ -209,7 +213,7 @@ class TestImportAllSchedulesPortfolio(TransactionCase):
         self.assertEqual(projects_payload[0]['max_slip_days'], 10)
         # Project B no debe haber sido tocado: sigue con su schedule viejo.
         schedule_b = self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task_b.id), ('scenario_id', '=', self.scenario_b.id),
+            ('task_id', '=', self.task_b.id), ('scenario_id', '=', self.scenario_b.scenario_id.id),
         ])
         self.assertEqual(str(schedule_b.end_scheduled.date()), '2024-01-05')
 
@@ -248,8 +252,9 @@ class TestArchivedAncestorPreflight(TransactionCase):
         project = self.env['project.project'].create({
             'name': name, 'is_tj_enabled': True,
         })
-        self.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': project.id, 'is_baseline': True,
+        scenario = self.env['insight.scenario'].create({'name': 'Plan'})
+        self.env['insight.scenario.project'].create({
+            'scenario_id': scenario.id, 'project_id': project.id, 'is_baseline': True,
         })
         return project
 

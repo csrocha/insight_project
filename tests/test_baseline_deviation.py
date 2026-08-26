@@ -24,8 +24,9 @@ class TestFreezeBaselineSnapshot(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Freeze Project', 'is_tj_enabled': True, 'date_start': '2026-07-06',
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.root = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id, 'allocated_hours': 40.0,
@@ -101,8 +102,9 @@ class TestComputeAndSaveDeviationReport(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Deviation Project', 'is_tj_enabled': True, 'date_start': '2026-07-06',
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.root = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id, 'allocated_hours': 40.0,
@@ -239,8 +241,9 @@ class TestActionGenerateReportsIncludesDeviation(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Unified Reports Project', 'is_tj_enabled': True, 'date_start': '2026-07-06',
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.root = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id, 'allocated_hours': 40.0,
@@ -251,7 +254,7 @@ class TestActionGenerateReportsIncludesDeviation(TransactionCase):
         })
 
     def test_draft_project_generates_no_deviation_report(self):
-        self.scenario.action_generate_reports()
+        self.project.scenario_link_ids.action_generate_reports()
         count = self.env['knowledge.asset'].search_count([
             ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.scenario.id),
             ('category', '=', 'insight_project.deviation_report'),
@@ -260,7 +263,7 @@ class TestActionGenerateReportsIncludesDeviation(TransactionCase):
 
     def test_progress_project_also_generates_deviation_report(self):
         self.project.action_start()  # congela el baseline, requisito del reporte
-        self.scenario.action_generate_reports()
+        self.project.scenario_link_ids.action_generate_reports()
         count = self.env['knowledge.asset'].search_count([
             ('res_model', '=', 'insight.scenario'), ('res_id', '=', self.scenario.id),
             ('category', '=', 'insight_project.deviation_report'),
@@ -279,8 +282,9 @@ class TestCronRegeneratesReports(TransactionCase):
         cls.project = cls.env['project.project'].create({
             'name': 'Cron Reports Project', 'is_tj_enabled': True, 'date_start': '2026-07-06',
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.root = cls.env['project.task'].create({
             'name': 'Fase 1', 'project_id': cls.project.id, 'allocated_hours': 40.0,
@@ -298,7 +302,7 @@ class TestCronRegeneratesReports(TransactionCase):
         cls.project.action_start()
 
     def _csv_for_root(self, end='2026-07-12'):
-        sc_id = self.project._tjp_scenario_id(self.scenario)
+        sc_id = self.project._tjp_scenario_id(self.project.scenario_link_ids)
         header = '"Id";"Bsi";"Name";"Start";"End";"Effort";"Duration";"Resources";"Criticalness"\n'
         row = f'"t{self.root.id}";"1";"Fase 1";"2026-07-06";"{end}";"5.0d";"5.0d";"";"0"\n'
         return sc_id, header + row

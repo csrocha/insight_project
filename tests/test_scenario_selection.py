@@ -31,8 +31,16 @@ class TestScenarioSelectionBase(TransactionCase):
         return self.env['project.task'].create(vals)
 
     def _scenario(self, name, is_baseline=False):
-        return self.env['insight.scenario'].create({
-            'name': name, 'project_id': self.project.id, 'is_baseline': is_baseline,
+        """Devuelve el vínculo (insight.scenario.project), no el escenario
+        pelado: is_baseline vive ahí, y es lo que _import_scenario_csv
+        espera recibir. total_cost/selection_score/etc. son related fields
+        que pasan a través del vínculo, así que los tests pueden seguir
+        leyéndolos directo del valor devuelto."""
+        scenario = self.env['insight.scenario'].create({'name': name})
+        return self.env['insight.scenario.project'].create({
+            'scenario_id': scenario.id,
+            'project_id': self.project.id,
+            'is_baseline': is_baseline,
         })
 
     @staticmethod
@@ -141,9 +149,9 @@ class TestMinResourcesStrategy(TestScenarioSelectionBase):
         ), sequential)
 
         self.assertEqual(self.project._peak_concurrent_resources(
-            parallel, self.project._tjp_leaf_task_ids()), 2)
+            parallel.scenario_id, self.project._tjp_leaf_task_ids()), 2)
         self.assertEqual(self.project._peak_concurrent_resources(
-            sequential, self.project._tjp_leaf_task_ids()), 1,
+            sequential.scenario_id, self.project._tjp_leaf_task_ids()), 1,
             'A task ending exactly when another starts must not count as concurrent',
         )
 

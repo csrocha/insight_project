@@ -33,8 +33,9 @@ class TestActionRunScheduleGuards(TransactionCase):
 
     def test_requires_microservice_url_configured(self):
         self.project.is_tj_enabled = True
-        self.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': self.project.id, 'is_baseline': True,
+        scenario = self.env['insight.scenario'].create({'name': 'Plan'})
+        self.env['insight.scenario.project'].create({
+            'scenario_id': scenario.id, 'project_id': self.project.id, 'is_baseline': True,
         })
         self.env['ir.config_parameter'].sudo().set_param('insight_project.tj_microservice_url', '')
         with self.assertRaises(UserError):
@@ -50,8 +51,9 @@ class TestActionRunScheduleSuccess(TransactionCase):
             'name': 'Scheduler Success Project',
             'is_tj_enabled': True,
         })
-        cls.scenario = cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        _scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.scenario = cls.env['insight.scenario.project'].create({
+            'scenario_id': _scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.task = cls.env['project.task'].create({
             'name': 'Task A', 'project_id': cls.project.id, 'user_ids': [(6, 0, [])],
@@ -79,7 +81,7 @@ class TestActionRunScheduleSuccess(TransactionCase):
         self.assertEqual(result['params']['type'], 'success')
 
         schedule = self.env['insight.task.schedule'].search([
-            ('task_id', '=', self.task.id), ('scenario_id', '=', self.scenario.id),
+            ('task_id', '=', self.task.id), ('scenario_id', '=', self.scenario.scenario_id.id),
         ])
         self.assertTrue(schedule, 'Schedule should have been imported from the mocked tj3 response')
 
@@ -133,12 +135,11 @@ class TestActionRunScheduleSuccessPortfolio(TransactionCase):
         cls.peer = cls.env['project.project'].create({
             'name': 'Portfolio Peer', 'is_tj_enabled': True, 'state': 'progress',
         })
-        cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.driver.id, 'is_baseline': True,
-        })
-        cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.peer.id, 'is_baseline': True,
-        })
+        for target_project in (cls.driver, cls.peer):
+            scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+            cls.env['insight.scenario.project'].create({
+                'scenario_id': scenario.id, 'project_id': target_project.id, 'is_baseline': True,
+            })
         cls.env['ir.config_parameter'].sudo().set_param('insight_project.tj_microservice_url', 'http://tj3.local')
 
     def test_success_note_posted_on_every_persisted_project_with_a_single_call(self):
@@ -317,8 +318,9 @@ class TestActionRunScheduleUnscheduledTasks(TransactionCase):
             'name': 'Unscheduled Tasks Project',
             'is_tj_enabled': True,
         })
-        cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.env['ir.config_parameter'].sudo().set_param('insight_project.tj_microservice_url', 'http://tj3.local')
 
@@ -375,8 +377,9 @@ class TestActionRunScheduleHorizonWarning(TransactionCase):
             'date_start': '2026-01-01',
             'date': '2026-02-01',
         })
-        cls.env['insight.scenario'].create({
-            'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True,
+        scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
         })
         cls.env['ir.config_parameter'].sudo().set_param('insight_project.tj_microservice_url', 'http://tj3.local')
 

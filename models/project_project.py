@@ -47,7 +47,9 @@ class ProjectProject(models.Model):
         default='America/Argentina/Buenos_Aires',
     )
     is_tj_enabled = fields.Boolean(string='Habilitar integración TaskJuggler')
-    scenario_ids = fields.One2many('insight.scenario', 'project_id', string='Escenarios')
+    scenario_link_ids = fields.One2many(
+        'insight.scenario.project', 'project_id', string='Escenarios',
+    )
     cost_budget_ids = fields.One2many(
         'insight.cost.budget', 'project_id', string='Costos extra (infra/SaaS)',
     )
@@ -111,7 +113,7 @@ class ProjectProject(models.Model):
             'name': _('%s (clon)', self.name),
             'state': 'draft',
             'template_project_id': self.id,
-            'scenario_ids': [],
+            'scenario_link_ids': [],
             'schedule_dirty': False,
             'last_scheduled': False,
         })
@@ -140,13 +142,16 @@ class ProjectProject(models.Model):
         for task in tasks:
             _hours, contributing = task.source_task_id._get_calibration_chain()
             involved_users |= contributing.mapped('user_ids')
-        self.scenario_ids = [Command.create({
+        scenario = self.env['insight.scenario'].create({
             'name': _('Baseline'),
-            'is_baseline': True,
             'efficiency_ids': [
                 Command.create({'user_id': user.id, 'efficiency': 1.0})
                 for user in involved_users
             ],
+        })
+        self.scenario_link_ids = [Command.create({
+            'scenario_id': scenario.id,
+            'is_baseline': True,
         })]
 
     def action_export_tjp(self):
@@ -173,7 +178,7 @@ class ProjectProject(models.Model):
         self.ensure_one()
         if not self.is_tj_enabled:
             raise UserError(_('La integración TaskJuggler no está habilitada para este proyecto.'))
-        if not self.scenario_ids:
+        if not self.scenario_link_ids:
             raise UserError(_('Defina al menos un escenario antes de ejecutar el schedule.'))
 
         # Recordset combinado: depende del estado de self (draft => self
@@ -369,13 +374,13 @@ class ProjectProject(models.Model):
         # ya es 'progress'). Un proyecto que falle no bloquea a los demás —
         # mismo criterio de aislamiento que el resto del cron.
         for project in progress_projects:
-            baseline = project.scenario_ids.filtered('is_baseline')[:1]
-            if not baseline:
+            baseline_link = project.scenario_link_ids.filtered('is_baseline')[:1]
+            if not baseline_link:
                 continue
             try:
-                project._compute_and_save_cost_reports(baseline)
+                project._compute_and_save_cost_reports(baseline_link.scenario_id)
                 project._compute_and_save_gantt_report()
-                project._compute_and_save_deviation_report(baseline)
+                project._compute_and_save_deviation_report(baseline_link.scenario_id)
             except UserError as exc:
                 project.message_post(body=str(exc))
 
@@ -573,7 +578,7 @@ class ProjectProject(models.Model):
         if active_project is None:
             self.ensure_one()
             active_project = self
-        scenarios = active_project.scenario_ids  # snapshot once — header y reports deben coincidir
+        scenarios = active_project.scenario_link_ids  # snapshot once — header y reports deben coincidir
         now_date = self._tjp_now_date()
         lines = []
         lines += self._tjp_project_header(scenarios, now_date, active_project=active_project)
@@ -618,7 +623,7 @@ class ProjectProject(models.Model):
             self.ensure_one()
             active_project = self
         if scenarios is None:
-            scenarios = active_project.scenario_ids
+            scenarios = active_project.scenario_link_ids
         proj_id = f'p{active_project.id}'
         name = (active_project.name or 'Project').replace('"', "'")
         starts = [p.date_start or fields.Date.today() for p in self]
@@ -653,12 +658,12 @@ class ProjectProject(models.Model):
             # parser only keeps the last sibling declaration.
             root, *alternates = scenarios
             root_id = self._tjp_scenario_id(root)
-            root_name = (root.name or 'Scenario').replace('"', "'")
+            root_name = (root.scenario_id.name or 'Scenario').replace('"', "'")
             if alternates:
                 lines.append(f'  scenario {root_id} "{root_name}" {{')
                 for sc in alternates:
                     sc_id = self._tjp_scenario_id(sc)
-                    sc_name = (sc.name or 'Scenario').replace('"', "'")
+                    sc_name = (sc.scenario_id.name or 'Scenario').replace('"', "'")
                     lines.append(f'    scenario {sc_id} "{sc_name}"')
                 lines.append('  }')
             else:
@@ -899,11 +904,11 @@ class ProjectProject(models.Model):
                 lines.append(f'  workinghours {tj_day} off')
         return lines
 
-    def _tjp_scenario_supplement(self, scenario):
+    def _tjp_scenario_supplement(self, scenario_link):
         """supplement resource blocks para eficiencias por escenario."""
         lines = []
-        sc_id = self._tjp_scenario_id(scenario)
-        for eff in scenario.efficiency_ids:
+        sc_id = self._tjp_scenario_id(scenario_link)
+        for eff in scenario_link.scenario_id.efficiency_ids:
             res_id = self._tjp_resource_id(eff.user_id.partner_id.id)
             lines += [
                 f'supplement resource {res_id} {{',
@@ -1261,7 +1266,7 @@ class ProjectProject(models.Model):
     def _tjp_reports(self, scenarios=None):
         """One taskreport per scenario so each CSV file maps to exactly one scenario."""
         if scenarios is None:
-            scenarios = self.scenario_ids
+            scenarios = self.scenario_link_ids
         # balance es lo que hace que la columna 'cost' devuelva un número en
         # vez del string literal "No 'balance' defined!" (confirmado contra
         # el binario real) — 'revenue' es la cuenta dummy de _tjp_cost_account,
@@ -1432,16 +1437,16 @@ class ProjectProject(models.Model):
         }
 
     def action_generate_reports(self):
-        """Wrapper de conveniencia sobre el proyecto: resuelve el
-        escenario baseline y delega en insight.scenario (que es el dueño
-        real de la acción, ver models/insight_scenario.py) — así el botón
-        de un escenario puntual y el de la pestaña Scheduler del
+        """Wrapper de conveniencia sobre el proyecto: resuelve el vínculo
+        baseline y delega en insight.scenario.project (que es el dueño
+        real de la acción, ver models/insight_scenario_project.py) — así el
+        botón de un escenario puntual y el de la pestaña Scheduler del
         proyecto hacen exactamente lo mismo."""
         self.ensure_one()
-        scenario = self.scenario_ids.filtered('is_baseline')[:1]
-        if not scenario:
+        link = self.scenario_link_ids.filtered('is_baseline')[:1]
+        if not link:
             raise UserError(_('No hay un escenario baseline. Ejecute el schedule primero.'))
-        return scenario.action_generate_reports()
+        return link.action_generate_reports()
 
     def _compute_report_asset_ids(self):
         Asset = self.env['knowledge.asset']
@@ -1452,7 +1457,8 @@ class ProjectProject(models.Model):
                     self._TJP_DEVIATION_REPORT_CATEGORY,
                 ]),
                 '|',
-                '&', ('res_model', '=', 'insight.scenario'), ('res_id', 'in', project.scenario_ids.ids),
+                '&', ('res_model', '=', 'insight.scenario'),
+                ('res_id', 'in', project.scenario_link_ids.scenario_id.ids),
                 '&', ('res_model', '=', 'project.project'), ('res_id', '=', project.id),
             ])
 
@@ -1543,9 +1549,9 @@ class ProjectProject(models.Model):
         que congelar — no rompe."""
         super().action_start()
         for project in self:
-            baseline = project.scenario_ids.filtered('is_baseline')[:1]
-            if baseline:
-                project._freeze_baseline_snapshot(baseline)
+            baseline_link = project.scenario_link_ids.filtered('is_baseline')[:1]
+            if baseline_link:
+                project._freeze_baseline_snapshot(baseline_link.scenario_id)
 
     def _get_or_create_deviation_asset(self, scenario):
         self.ensure_one()
@@ -1886,16 +1892,18 @@ class ProjectProject(models.Model):
         return '!' * (depth + 1) + '.'.join(reversed(parts))
 
     @staticmethod
-    def _tjp_scenario_id(scenario):
-        """Prefijado con el id del proyecto dueño del escenario — necesario
-        para que una corrida combinada (ver _generate_tjp) no confunda dos
-        escenarios de distintos proyectos con el mismo nombre (ej. "Default"
-        en dos proyectos distintos)."""
-        raw = re.sub(r'[^a-zA-Z0-9_]', '_', scenario.name or 'scenario')
+    def _tjp_scenario_id(scenario_link):
+        """Prefijado con el id del proyecto que dispara esta corrida —
+        necesario para que una corrida combinada (ver _generate_tjp) no
+        confunda dos escenarios con el mismo nombre (ej. "Default" en dos
+        proyectos distintos), y para que un mismo escenario compartido entre
+        proyectos (ver insight.scenario.project) reciba un id TJ3 distinto
+        por cada proyecto que lo usa en esta corrida."""
+        raw = re.sub(r'[^a-zA-Z0-9_]', '_', scenario_link.scenario_id.name or 'scenario')
         raw = re.sub(r'_+', '_', raw).strip('_') or 'scenario'
         if raw[0].isdigit():
             raw = 'sc_' + raw
-        return f'p{scenario.project_id.id}_{raw.lower()}'[:24]
+        return f'p{scenario_link.project_id.id}_{raw.lower()}'[:24]
 
     @staticmethod
     def _tjp_shift_id(calendar):
@@ -1920,42 +1928,42 @@ class ProjectProject(models.Model):
         sin tocar su insight.task.schedule real) para alimentar el reporte
         de impacto (_tj_generate_evaluation_impact_report). Si está en
         'progress', se persiste el de todos los proyectos incluidos, cada
-        uno contra su propio escenario baseline (nunca contra el de
-        `active_project` — un insight.task.schedule exige que
-        scenario_id.project_id == task_id.project_id)."""
+        uno contra su propio vínculo baseline (nunca contra el de
+        `active_project`) — un escenario compartido entre proyectos (ver
+        insight.scenario.project) puede terminar en más de un
+        insight.task.schedule a la vez, uno por cada proyecto que lo usó
+        en esta corrida."""
         if active_project is None:
             self.ensure_one()
             active_project = self
         persist_projects = self if active_project.state == 'progress' else active_project
         preview_projects = self - persist_projects
 
-        sc_map = {self._tjp_scenario_id(sc): sc for sc in active_project.scenario_ids}
+        sc_map = {self._tjp_scenario_id(link): link for link in active_project.scenario_link_ids}
         imported = 0
         preview_by_project = {}
         for filename, csv_content in csv_files.items():
             base = filename.rsplit('.', 1)[0]
             sc_key = base[len('schedule_'):] if base.startswith('schedule_') else base
-            scenario = sc_map.get(sc_key)
-            if not scenario:
+            scenario_link = sc_map.get(sc_key)
+            if not scenario_link:
                 continue
             imported += 1
-            # `scenario` es un insight.scenario de active_project — solo se
-            # puede usar tal cual para persistir las filas del propio
-            # active_project (insight.task.schedule exige que
-            # scenario_id.project_id == task_id.project_id). Los demás
-            # proyectos combinados ('progress' peers) persisten contra SU
-            # PROPIO escenario baseline, y solo para la corrida baseline —
-            # no tiene sentido comparar sus tareas contra una variante
-            # hipotética de active_project que no les pertenece.
-            active_project._import_scenario_csv(csv_content, scenario)
-            if scenario.is_baseline:
+            # `scenario_link` vincula a active_project — solo se puede usar
+            # tal cual para persistir las filas del propio active_project.
+            # Los demás proyectos combinados ('progress' peers) persisten
+            # contra SU PROPIO vínculo baseline, y solo para la corrida
+            # baseline — no tiene sentido comparar sus tareas contra una
+            # variante hipotética de active_project que no les pertenece.
+            active_project._import_scenario_csv(csv_content, scenario_link)
+            if scenario_link.is_baseline:
                 for project in persist_projects - active_project:
-                    peer_scenario = project.scenario_ids.filtered('is_baseline')[:1]
-                    if peer_scenario:
-                        project._import_scenario_csv(csv_content, peer_scenario)
+                    peer_link = project.scenario_link_ids.filtered('is_baseline')[:1]
+                    if peer_link:
+                        project._import_scenario_csv(csv_content, peer_link)
                 for project in preview_projects:
                     preview_by_project[project.id] = project._parse_scenario_csv_preview(
-                        csv_content, scenario,
+                        csv_content, scenario_link,
                     )
         for project in persist_projects:
             project._apply_selection_strategy()
@@ -2053,41 +2061,45 @@ class ProjectProject(models.Model):
         dejando la decisión y el motivo en el chatter, porque a partir de acá
         is_baseline puede cambiar sin que nadie lo haya tocado a mano."""
         self.ensure_one()
-        scenarios = self.scenario_ids
-        if not scenarios:
+        links = self.scenario_link_ids
+        if not links:
             return
+        scenarios = links.scenario_id
         self._compute_scenario_aggregates(scenarios)
         scenarios.write({'selection_score': 0.0})
-        if self.scenario_selection_strategy == 'manual' or len(scenarios) == 1:
+        if self.scenario_selection_strategy == 'manual' or len(links) == 1:
             return
 
-        candidates = scenarios
+        candidate_links = links
         missed_deadline = False
         if self.date:
-            within_deadline = scenarios.filtered(
-                lambda s: not s.computed_end_date or s.computed_end_date.date() <= self.date
+            within_deadline = links.filtered(
+                lambda l: not l.scenario_id.computed_end_date
+                or l.scenario_id.computed_end_date.date() <= self.date
             )
             if within_deadline:
-                candidates = within_deadline
+                candidate_links = within_deadline
             else:
                 missed_deadline = True
 
-        metric_by_scenario = self._weighted_scenario_scores(candidates)
+        metric_by_scenario = self._weighted_scenario_scores(candidate_links.scenario_id)
         best_value = min(metric_by_scenario.values())
-        tied = candidates.filtered(lambda s: metric_by_scenario[s.id] == best_value)
-
-        current_baseline = scenarios.filtered('is_baseline')
-        winner = (
-            current_baseline[:1]
-            if current_baseline and current_baseline in tied
-            else tied[:1]
+        tied_links = candidate_links.filtered(
+            lambda l: metric_by_scenario[l.scenario_id.id] == best_value
         )
 
-        scenarios.write({'is_baseline': False})
-        winner.is_baseline = True
-        self._post_selection_message(scenarios, winner, candidates, missed_deadline)
+        current_baseline = links.filtered('is_baseline')
+        winner = (
+            current_baseline[:1]
+            if current_baseline and current_baseline in tied_links
+            else tied_links[:1]
+        )
 
-    def _post_selection_message(self, scenarios, winner, candidates, missed_deadline):
+        links.write({'is_baseline': False})
+        winner.is_baseline = True
+        self._post_selection_message(links, winner, candidate_links, missed_deadline)
+
+    def _post_selection_message(self, links, winner, candidate_links, missed_deadline):
         strategy_label = dict(
             self._fields['scenario_selection_strategy'].selection
         )[self.scenario_selection_strategy]
@@ -2096,10 +2108,11 @@ class ProjectProject(models.Model):
             lines.append(_(
                 'Ningún escenario cumple la fecha pactada (%s); se compararon todos igual.'
             ) % self.date)
-        for sc in scenarios:
-            marker = '→' if sc.id == winner.id else '·'
+        for link in links:
+            sc = link.scenario_id
+            marker = '→' if link.id == winner.id else '·'
             note = ''
-            if sc not in candidates and not missed_deadline:
+            if link not in candidate_links and not missed_deadline:
                 note = _(' (excede la fecha pactada)')
             end_txt = str(sc.computed_end_date) if sc.computed_end_date else '-'
             lines.append(_(
@@ -2118,11 +2131,11 @@ class ProjectProject(models.Model):
         exists when `project_enterprise` is installed (not a dependency of
         this module), so it's only written when present."""
         self.ensure_one()
-        baseline = self.scenario_ids.filtered('is_baseline')[:1]
-        if not baseline:
+        baseline_link = self.scenario_link_ids.filtered('is_baseline')[:1]
+        if not baseline_link:
             return
         schedules = self.env['insight.task.schedule'].search([
-            ('scenario_id', '=', baseline.id),
+            ('scenario_id', '=', baseline_link.scenario_id.id),
             ('task_id.project_id', '=', self.id),
         ])
         has_planned_date_begin = 'planned_date_begin' in self.env['project.task']._fields
@@ -2134,7 +2147,7 @@ class ProjectProject(models.Model):
                 vals['user_ids'] = [(6, 0, schedule.resource_ids.ids)]
             schedule.task_id.write(vals)
 
-    def _parse_tj_schedule_csv(self, csv_content, scenario):
+    def _parse_tj_schedule_csv(self, csv_content, scenario_link):
         """Parsea un CSV de reporte TJ3 y devuelve (vals_list,
         milestone_dates) para las tareas/hitos de `self` — sin tocar la
         base. Compartido por `_import_scenario_csv` (persiste) y
@@ -2145,6 +2158,7 @@ class ProjectProject(models.Model):
             self.env['project.task'].search([('project_id', '=', self.id)]).ids
         )
         valid_milestone_ids = set(self.milestone_ids.ids)
+        scenario_id = scenario_link.scenario_id.id
 
         vals_list = []
         milestone_dates = {}
@@ -2158,7 +2172,7 @@ class ProjectProject(models.Model):
             if task_odoo_id and task_odoo_id in valid_task_ids:
                 vals_list.append({
                     'task_id': task_odoo_id,
-                    'scenario_id': scenario.id,
+                    'scenario_id': scenario_id,
                     'start_scheduled': self._parse_tj_datetime(norm.get('start', ''), tz_name),
                     'end_scheduled': self._parse_tj_datetime(norm.get('end', ''), tz_name),
                     'effort_days': self._parse_tj_duration(norm.get('effort', '')),
@@ -2171,31 +2185,31 @@ class ProjectProject(models.Model):
                 })
                 continue
             milestone_odoo_id = self._parse_milestone_id_from_tj_id(tj_id)
-            if scenario.is_baseline and milestone_odoo_id and milestone_odoo_id in valid_milestone_ids:
+            if scenario_link.is_baseline and milestone_odoo_id and milestone_odoo_id in valid_milestone_ids:
                 end = self._parse_tj_datetime(norm.get('end', ''), tz_name)
                 milestone_dates[milestone_odoo_id] = end.date() if end else False
         return vals_list, milestone_dates
 
-    def _import_scenario_csv(self, csv_content, scenario):
+    def _import_scenario_csv(self, csv_content, scenario_link):
         """Parse a TJ3 CSV report and upsert insight.task.schedule records."""
         Schedule = self.env['insight.task.schedule']
         Schedule.search([
-            ('scenario_id', '=', scenario.id),
+            ('scenario_id', '=', scenario_link.scenario_id.id),
             ('task_id.project_id', '=', self.id),
         ]).unlink()
-        vals_list, milestone_dates = self._parse_tj_schedule_csv(csv_content, scenario)
+        vals_list, milestone_dates = self._parse_tj_schedule_csv(csv_content, scenario_link)
         if vals_list:
             Schedule.create(vals_list)
         for milestone_id, scheduled_date in milestone_dates.items():
             self.env['project.milestone'].browse(milestone_id).tj_scheduled_date = scheduled_date
 
-    def _parse_scenario_csv_preview(self, csv_content, scenario):
+    def _parse_scenario_csv_preview(self, csv_content, scenario_link):
         """Como _import_scenario_csv pero sin persistir nada — usado por el
         modo evaluación (ver _import_all_schedules) para saber cómo
         quedarían las tareas/hitos de `self` sin tocar su
         insight.task.schedule real, y poder compararlo contra lo ya
         persistido en _tj_generate_evaluation_impact_report."""
-        vals_list, milestone_dates = self._parse_tj_schedule_csv(csv_content, scenario)
+        vals_list, milestone_dates = self._parse_tj_schedule_csv(csv_content, scenario_link)
         return {
             'tasks': {v['task_id']: v for v in vals_list},
             'milestones': milestone_dates,
@@ -2267,8 +2281,11 @@ class ProjectProject(models.Model):
         actual de `project`) contra lo hipotético (`preview`, sin persistir)
         — delta de fecha por tarea raíz/hito, usuarios cuya asignación
         cambia, y un indicador general de corrimiento de fin de proyecto."""
-        baseline = project.scenario_ids.filtered('is_baseline')[:1]
-        current_by_task = {s.task_id.id: s for s in baseline.schedule_ids} if baseline else {}
+        baseline_link = project.scenario_link_ids.filtered('is_baseline')[:1]
+        current_by_task = (
+            {s.task_id.id: s for s in baseline_link.scenario_id.schedule_ids}
+            if baseline_link else {}
+        )
         root_task_ids = set(project.task_ids.filtered(lambda t: not t.parent_id).ids)
 
         task_deltas = []

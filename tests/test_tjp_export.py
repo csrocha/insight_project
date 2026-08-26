@@ -84,19 +84,23 @@ class TestTjpProjectHeader(TransactionCase):
         self.assertIn('  scenario plan "Plan"', lines)
 
     def test_alternates_nested_under_root_scenario(self):
-        plan = self.env['insight.scenario'].create(
-            {'name': 'Plan', 'project_id': self.project.id, 'is_baseline': True})
-        self.env['insight.scenario'].create({'name': 'Noai', 'project_id': self.project.id})
-        self.env['insight.scenario'].create({'name': 'Withia', 'project_id': self.project.id})
+        plan_scenario = self.env['insight.scenario'].create({'name': 'Plan'})
+        plan = self.env['insight.scenario.project'].create({
+            'scenario_id': plan_scenario.id, 'project_id': self.project.id, 'is_baseline': True,
+        })
+        for name in ('Noai', 'Withia'):
+            other_scenario = self.env['insight.scenario'].create({'name': name})
+            self.env['insight.scenario.project'].create({
+                'scenario_id': other_scenario.id, 'project_id': self.project.id,
+            })
 
-        text = '\n'.join(self.project._tjp_project_header(self.project.scenario_ids))
+        text = '\n'.join(self.project._tjp_project_header(self.project.scenario_link_ids))
         plan_id = self.project._tjp_scenario_id(plan)
         self.assertIn(f'scenario {plan_id} "Plan" {{', text)
-        for sc in self.project.scenario_ids.filtered(lambda s: s.name != 'Plan'):
+        for sc in self.project.scenario_link_ids.filtered(lambda l: l.scenario_id.name != 'Plan'):
             sc_id = self.project._tjp_scenario_id(sc)
-            self.assertIn(f'    scenario {sc_id} "{sc.name}"', text)
-        plan.unlink()
-        self.project.scenario_ids.unlink()
+            self.assertIn(f'    scenario {sc_id} "{sc.scenario_id.name}"', text)
+        self.project.scenario_link_ids.scenario_id.unlink()
 
     def test_cost_account_declares_dummy_revenue_account(self):
         """'revenue' nunca recibe chargeset — existe solo porque `balance`
@@ -1104,9 +1108,14 @@ class TestTjpTaskBlock(TransactionCase):
         self.assertIn(self.u3, project_users)
 
     def test_reports_one_per_scenario(self):
-        plan = self.env['insight.scenario'].create(
-            {'name': 'Plan', 'project_id': self.project.id, 'is_baseline': True})
-        noai = self.env['insight.scenario'].create({'name': 'Noai', 'project_id': self.project.id})
+        plan_scenario = self.env['insight.scenario'].create({'name': 'Plan'})
+        plan = self.env['insight.scenario.project'].create({
+            'scenario_id': plan_scenario.id, 'project_id': self.project.id, 'is_baseline': True,
+        })
+        noai_scenario = self.env['insight.scenario'].create({'name': 'Noai'})
+        noai = self.env['insight.scenario.project'].create({
+            'scenario_id': noai_scenario.id, 'project_id': self.project.id,
+        })
         lines = self.project._tjp_reports(plan | noai)
         text = '\n'.join(lines)
         plan_id = self.project._tjp_scenario_id(plan)
@@ -1351,8 +1360,10 @@ class TestGenerateTjpEndToEnd(TransactionCase):
             'email': 'full_plan_resource@insight.test',
             'groups_id': [(4, cls.env.ref('base.group_user').id)],
         })
-        cls.scenario = cls.env['insight.scenario'].create(
-            {'name': 'Plan', 'project_id': cls.project.id, 'is_baseline': True})
+        _scenario = cls.env['insight.scenario'].create({'name': 'Plan'})
+        cls.scenario = cls.env['insight.scenario.project'].create({
+            'scenario_id': _scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
+        })
         root = cls.env['project.task'].create({
             'name': 'Eje', 'project_id': cls.project.id, 'user_ids': [(6, 0, [])],
         })
