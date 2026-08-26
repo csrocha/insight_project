@@ -9,6 +9,47 @@ para trazabilidad completa del razonamiento de agentes de IA.
 
 ---
 
+## [17.0.9.8.1] - 2026-08-26
+
+### Prompt
+
+> En producción acabo de ejecutar el rescheduling en el proyecto
+> "Autodiagnóstico y Sistema de Oportunidades ProPyMES" y obtuve
+> "422 Client Error ... u11 is not a defined resource" -- ¿puedes ver qué
+> pasó? [...] En proyecto participan más usuarios: Juan Manuel, Noel. No
+> entiendo porque no aparecen.
+
+### Corregido
+
+- `_tjp_scenario_supplement`: un `insight.scenario` puede ser compartido
+  entre proyectos (plantilla de eficiencias reusada, ver
+  `insight.scenario.project_link_ids`). El método volcaba TODAS las
+  `efficiency_ids` del escenario sin filtrar, incluyendo usuarios que no
+  participan de `self` en absoluto -- TJ3 rechazaba el archivo completo
+  con `"u<id> is not a defined resource"` porque ese id nunca se declaraba
+  con `resource u<id> "..." {` (solo se declaran los de
+  `_tj_project_users()`). Caso real: el escenario "Plan" compartido entre
+  "Autodiagnóstico y Sistema de Oportunidades ProPyMES" e
+  "Industrialización de Datos" traía overrides de 3 usuarios; el primer
+  proyecto solo tenía a uno de esos tres como candidato/asignado real.
+- `_tjp_scenario_supplement` ahora recibe el conjunto de
+  `_tj_project_users()` ya calculado por `_generate_tjp` y omite cualquier
+  `efficiency` cuyo usuario no esté ahí.
+
+### Discusión de diseño
+
+- El caso de Juan Manuel Gigena Gacic (usuario real detrás de "u22")
+  reveló un segundo bug, no relacionado, en `project_improve` (ver su
+  propio CHANGELOG, v17.0.1.3.1): estaba asignado (`user_ids`) a 2 tareas
+  de este proyecto, pero `resource_pool_ids` -- el campo que TJ3 usa de
+  verdad para elegir a quién programar -- seguía apuntando al asignado
+  original. Se diagnosticó leyendo el estado real de producción (`odoo
+  shell` read-only) en vez de asumir a partir del .tjp generado.
+- Test nuevo `TestTjpScenarioSupplement` (3 casos): omite la eficiencia de
+  un usuario ajeno a este proyecto, incluye la de uno que sí participa, y
+  un end-to-end que verifica que todo `supplement resource` referenciado
+  en el .tjp generado tiene su `resource` declarado.
+
 ## [17.0.9.8.0] - 2026-08-26
 
 ### Prompt

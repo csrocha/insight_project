@@ -117,6 +117,90 @@ class TestTjpProjectHeader(TransactionCase):
         self.assertIn('  balance cost revenue', lines)
 
 
+class TestTjpScenarioSupplement(TransactionCase):
+    """Un insight.scenario es compartible entre proyectos (ver
+    insight_scenario.py) -- sus efficiency_ids pueden incluir usuarios que
+    no participan de `self` en absoluto, solo por estar en OTRO proyecto
+    que reusa el mismo escenario."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.project = cls.env['project.project'].create({
+            'name': 'Scenario Supplement Project',
+            'is_tj_enabled': True,
+            'date_start': '2026-06-29',
+        })
+        cls.other_project = cls.env['project.project'].create({
+            'name': 'Otro proyecto que comparte el escenario',
+            'is_tj_enabled': True,
+            'date_start': '2026-06-29',
+        })
+        cls.user_in_project, cls.user_only_in_other_project = cls.env['res.users'].with_context(
+            no_reset_password=True
+        ).create([
+            {
+                'name': 'En Este Proyecto',
+                'login': 'en_este_proyecto@insight.test',
+                'email': 'en_este_proyecto@insight.test',
+                'groups_id': [(4, cls.env.ref('base.group_user').id)],
+            },
+            {
+                'name': 'Solo En El Otro',
+                'login': 'solo_en_el_otro@insight.test',
+                'email': 'solo_en_el_otro@insight.test',
+                'groups_id': [(4, cls.env.ref('base.group_user').id)],
+            },
+        ])
+        cls.env['project.task'].create({
+            'project_id': cls.project.id,
+            'name': 'Tarea de este proyecto',
+            'allocated_hours': 8.0,
+            'user_ids': [(6, 0, [cls.user_in_project.id])],
+        })
+        cls.env['project.task'].create({
+            'project_id': cls.other_project.id,
+            'name': 'Tarea del otro proyecto',
+            'allocated_hours': 8.0,
+            'user_ids': [(6, 0, [cls.user_only_in_other_project.id])],
+        })
+        cls.scenario = cls.env['insight.scenario'].create({'name': 'Plan compartido'})
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.project.id, 'is_baseline': True,
+        })
+        cls.env['insight.scenario.project'].create({
+            'scenario_id': cls.scenario.id, 'project_id': cls.other_project.id, 'is_baseline': True,
+        })
+        cls.env['insight.scenario.efficiency'].create([
+            {'scenario_id': cls.scenario.id, 'user_id': cls.user_in_project.id, 'efficiency': 2.0},
+            {'scenario_id': cls.scenario.id, 'user_id': cls.user_only_in_other_project.id, 'efficiency': 1.5},
+        ])
+
+    def test_supplement_omits_efficiency_for_user_outside_this_project(self):
+        scenario_link = self.project.scenario_link_ids
+        project_users = self.project._tj_project_users()
+        text = '\n'.join(self.project._tjp_scenario_supplement(scenario_link, project_users))
+        self.assertNotIn(f'u{self.user_only_in_other_project.id}', text)
+
+    def test_supplement_includes_efficiency_for_this_projects_user(self):
+        scenario_link = self.project.scenario_link_ids
+        project_users = self.project._tj_project_users()
+        text = '\n'.join(self.project._tjp_scenario_supplement(scenario_link, project_users))
+        self.assertIn(f'supplement resource u{self.user_in_project.id} {{', text)
+
+    def test_generate_tjp_never_references_undeclared_resource(self):
+        """Bug real de producción (2026-08-26, proyecto 'Autodiagnóstico y
+        Sistema de Oportunidades ProPyMES'): un escenario compartido con
+        otro proyecto volcaba `supplement resource` para usuarios que no
+        participan de self, y TJ3 rechazaba el archivo entero con "u11 is
+        not a defined resource" porque ese id nunca se declaraba con
+        `resource u11 "..." {`."""
+        text = self.project._generate_tjp()
+        declared = set(re.findall(r'^resource (\S+) "', text, re.MULTILINE))
+        referenced = set(re.findall(r'^supplement resource (\S+) \{', text, re.MULTILINE))
+        self.assertTrue(referenced.issubset(declared), referenced - declared)
+
+
 class TestTjpProjectEndDate(TransactionCase):
 
     @classmethod

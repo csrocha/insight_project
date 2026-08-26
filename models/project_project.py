@@ -584,10 +584,11 @@ class ProjectProject(models.Model):
         lines += self._tjp_project_header(scenarios, now_date, active_project=active_project)
         lines += self._tjp_cost_account()
         lines += self._tjp_shift_declarations(now_date)
-        for user in self._tj_project_users():
+        project_users = self._tj_project_users()
+        for user in project_users:
             lines += self._tjp_resource_block(user)
         for scenario in scenarios:
-            lines += self._tjp_scenario_supplement(scenario)
+            lines += self._tjp_scenario_supplement(scenario, project_users)
         for task in self.task_ids.filtered(
             lambda t: not t.parent_id
         ).sorted('sequence'):
@@ -904,11 +905,23 @@ class ProjectProject(models.Model):
                 lines.append(f'  workinghours {tj_day} off')
         return lines
 
-    def _tjp_scenario_supplement(self, scenario_link):
-        """supplement resource blocks para eficiencias por escenario."""
+    def _tjp_scenario_supplement(self, scenario_link, project_users):
+        """supplement resource blocks para eficiencias por escenario.
+
+        Un `insight.scenario` es compartible entre proyectos (ver
+        insight.scenario.efficiency_ids/insight_scenario.py) — sus
+        eficiencias pueden incluir usuarios que no participan de `self`
+        (candidatos/asignados/timesheets de NINGUNA tarea, ver
+        _tj_project_users), solo por estar en OTRO proyecto que reusa el
+        mismo escenario. Emitir su `supplement resource` igual generaría un
+        recurso nunca declarado (`_tjp_resource_block` solo declara
+        `project_users`) — TJ3 rechaza el archivo entero con "is not a
+        defined resource"."""
         lines = []
         sc_id = self._tjp_scenario_id(scenario_link)
         for eff in scenario_link.scenario_id.efficiency_ids:
+            if eff.user_id not in project_users:
+                continue
             res_id = self._tjp_resource_id(eff.user_id.partner_id.id)
             lines += [
                 f'supplement resource {res_id} {{',
