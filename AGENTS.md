@@ -2,7 +2,7 @@
 
 **Modulo**: Insight Project
 **Proposito**: Integración de Odoo con TaskJuggler 3 para scheduling de proyectos.
-**Version actual**: 17.0.1.0.0 | **Entorno**: Odoo 17, rama `develop`
+**Versión**: la de `__manifest__.py` (no se repite acá) | **Entorno**: Odoo 17, rama `develop`
 
 Para las directrices generales de desarrollo de modulos Odoo en Observatorio PyME,
 ver el [AGENTS.md de fop_odoo_theme](https://github.com/observatoriopyme/fop_odoo_theme/blob/develop/AGENTS.md).
@@ -18,7 +18,7 @@ ver el [AGENTS.md de fop_odoo_theme](https://github.com/observatoriopyme/fop_odo
 - [ ] `__manifest__.py` version en formato `17.0.X.Y.Z` e incrementada correctamente
 - [ ] `__init__.py` importa todos los subdirectorios con modulos nuevos
 - [ ] Nuevos modelos tienen su entrada en `security/ir.model.access.csv`
-- [ ] Vistas usan sintaxis Odoo 17: `invisible="expr"` (no `attrs=`), `<list>` (no `<tree>`)
+- [ ] Vistas usan sintaxis Odoo 17: `invisible="expr"` (no `attrs=`), arch raíz `<tree>` (no `<list>`: rompe `ir.ui.view.type` en Odoo 17)
 - [ ] No se usa SQL crudo salvo necesidad justificada de performance
 - [ ] Los templates XML usan `t-out` (no `t-esc`) para Odoo 17
 
